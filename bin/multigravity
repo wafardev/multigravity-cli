@@ -6,7 +6,7 @@
 PROFILES_DIR="${MULTIGRAVITY_PROFILES_DIR:-$HOME/.config/multigravity-profiles}"
 REAL_HOME="${REAL_HOME:-$HOME}"
 
-usage() {
+print_help() {
     cat << 'EOF'
 Usage: multigravity [command] [options]
 
@@ -16,7 +16,7 @@ Commands:
   list                   List all existing profiles
   quotas                 Check model quota usage across all profiles
   delete <profile>       Delete an existing profile
-  help                   Show this help message
+  help, --help, -h       Show this help message
   <profile> [agy args]   Start agy session using the specified profile
 
 Examples:
@@ -27,6 +27,10 @@ Examples:
   multigravity pote -p "/quota"   # Run agy command under 'pote'
   multigravity quotas             # Inspect quotas across all profiles
 EOF
+}
+
+usage() {
+    print_help
     exit 1
 }
 
@@ -150,7 +154,8 @@ case "$1" in
         ;;
 
     help|--help|-h)
-        usage
+        print_help
+        exit 0
         ;;
 
     "")
