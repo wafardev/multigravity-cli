@@ -36,23 +36,23 @@ When launching a session with `mgy <profile>`, the environment redirects `HOME` 
 
 ```
 ~/.config/multigravity-profiles/
-├── perso/
+├── <profile-1>/
 │   ├── .gemini/
 │   │   └── antigravity-cli/         # Symlink -> host ~/.gemini/antigravity-cli (SHARED)
 │   ├── .gitconfig                   # Symlink -> host ~/.gitconfig
 │   ├── .ssh                         # Symlink -> host ~/.ssh
-│   └── Library/Keychains/           # Symlink -> host Keychain (Personal OAuth token)
-└── work/
+│   └── Library/Keychains/           # Isolated Keychain (Profile 1 OAuth token)
+└── <profile-2>/
     ├── .gemini/
     │   └── antigravity-cli/         # Symlink -> host ~/.gemini/antigravity-cli (SHARED)
     ├── .gitconfig                   # Symlink -> host ~/.gitconfig
     ├── .ssh                         # Symlink -> host ~/.ssh
-    └── Library/Keychains/           # Isolated Keychain (Work OAuth token)
+    └── Library/Keychains/           # Isolated Keychain (Profile 2 OAuth token)
 ```
 
 > [!NOTE]
-> - **Unified History & Memory**: Because `.gemini/antigravity-cli` is shared across all profiles, all your conversations, chat summaries, CLI settings, prompt history (`history.jsonl`), and MCP servers are always preserved. You can resume any conversation across different accounts seamlessly (`mgy work -c`).
-> - **Isolated Credentials & Quota**: Each non-default profile maintains its own isolated OAuth token. When you switch to `work`, you draw from your work account's quota limits without affecting your personal account or losing any context.
+> - **Unified History & Memory**: Because `.gemini/antigravity-cli` is shared across all profiles, all your conversations, chat summaries, CLI settings, prompt history (`history.jsonl`), and MCP servers are always preserved. You can resume any conversation across different accounts seamlessly (`mgy <profile> -c`).
+> - **Isolated Credentials & Quota**: Each profile maintains its own isolated OAuth token. When you switch profiles, you draw from that specific account's quota limits without affecting others or losing any context.
 > - **Preserved Identity**: Host `.gitconfig` and `.ssh` are symlinked across all profiles, ensuring git commits always retain your author name and email.
 
 ---
@@ -67,7 +67,6 @@ git clone https://github.com/your-username/multigravity-cli.git
 cd multigravity-cli
 ./install.sh
 ```
-*The installer automatically links your global config to `perso` and prepares the `work` workspace!*
 
 #### Option B: Standalone One-Liner
 ```bash
@@ -93,25 +92,20 @@ Both `mgy` and `multigravity` commands are available in your shell!
 
 ---
 
-### 2. Available Profiles & Setup
+### 2. Creating Profiles
 
-#### Check Registered Profiles
+Create as many profiles as you need for different Google accounts:
+
 ```bash
+# Set up a new profile with Google login
+mgy new <profile_name>
+
+# (Optional) Import your current host machine session into a named profile
+mgy import <profile_name>
+
+# List all configured profiles
 mgy list
 ```
-Output:
-```text
-Available profiles:
-perso
-work
-```
-
-- **`perso` is already ready**: It links directly to your global host configuration (`~/.gemini/antigravity-cli`).
-- **`work` (or new profile)**: To authenticate your work or secondary account, run:
-  ```bash
-  mgy new work
-  ```
-  Follow the OAuth prompt in your browser. Once completed, `work` is ready with its own isolated token!
 
 ---
 
@@ -119,17 +113,17 @@ work
 
 Launch interactive sessions under separate profiles in separate terminal tabs, windows, or tmux panes:
 
-* **Pane 1 (Personal Account - Global Config):**
+* **Pane 1:**
   ```bash
-  mgy perso
+  mgy <profile_1>
   ```
 
-* **Pane 2 (Work Account - Isolated):**
+* **Pane 2:**
   ```bash
-  mgy work
+  mgy <profile_2>
   ```
 
-Both instances execute simultaneously with full token, cache, and history isolation.
+Both instances execute simultaneously with full token and quota isolation while sharing all history and settings.
 
 #### Resuming Conversations Across Profiles
 Because conversations and history are shared globally, you can resume any conversation under any account:
@@ -138,22 +132,22 @@ Because conversations and history are shared globally, you can resume any conver
 # View recent conversation IDs:
 mgy conversations
 
-# Resume a specific conversation by ID in perso:
-mgy perso --conversation=c4e2acbb-a968-4591-aa3c-a09cf0bf9e22
+# Resume a specific conversation by ID:
+mgy <profile_1> --conversation=<conversation_id>
 
-# Resume that SAME conversation under work to use your work quota:
-mgy work --conversation=c4e2acbb-a968-4591-aa3c-a09cf0bf9e22
+# Resume that SAME conversation under another profile to use a different quota:
+mgy <profile_2> --conversation=<conversation_id>
 
 # Continue the most recent conversation:
-mgy perso -c
-mgy work --continue
+mgy <profile_1> -c
+mgy <profile_2> --continue
 ```
 
 #### Passing Other Flags and Arguments
 Any additional CLI arguments are forwarded directly to `agy`:
 ```bash
-mgy perso --model gemini-2.5-flash
-mgy work -p "Explain distributed locks in Go"
+mgy <profile> --model gemini-2.5-flash
+mgy <profile> -p "Explain distributed locks in Go"
 ```
 
 ---

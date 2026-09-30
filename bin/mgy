@@ -32,12 +32,13 @@ Resume & Conversation Flags (same as agy):
   $CMD_NAME <profile> -c, --continue       Continue the most recent conversation
 
 Examples:
-  $CMD_NAME perso --conversation=<id>      # Resume conversation in 'perso'
-  $CMD_NAME work -c                        # Continue latest chat under 'work'
-  $CMD_NAME conversations                  # View list of recent conversation IDs
-  $CMD_NAME perso                          # Start interactive agy session with 'perso'
-  $CMD_NAME work -p "/quota"               # Check quota under 'work'
-  $CMD_NAME quotas                         # Inspect quotas across all profiles
+  $CMD_NAME new <profile>                 # Set up a new profile with Google login
+  $CMD_NAME list                          # List all registered profiles
+  $CMD_NAME <profile>                     # Start interactive agy session with profile
+  $CMD_NAME <profile> -c                  # Continue latest chat under profile
+  $CMD_NAME <profile> --conversation=<id> # Resume specific conversation by ID
+  $CMD_NAME conversations                 # View list of recent conversation IDs
+  $CMD_NAME quotas                        # Inspect quotas across all profiles
 EOF
 }
 
@@ -122,7 +123,8 @@ case "$1" in
 
     import)
         shift
-        PROFILE_NAME="${1:-perso}"
+        PROFILE_NAME="$1"
+        [ -z "$PROFILE_NAME" ] && usage
         TARGET_DIR="$PROFILES_DIR/$PROFILE_NAME"
 
         if [ ! -d "$REAL_HOME/.gemini/antigravity-cli" ]; then
@@ -233,14 +235,27 @@ case "$1" in
 
     -*)
         # Flags passed without an explicit profile name (e.g. mgy --conversation=<id>, mgy -c)
-        DEFAULT_PROFILE="${MULTIGRAVITY_DEFAULT_PROFILE:-perso}"
-        TARGET_DIR="$PROFILES_DIR/$DEFAULT_PROFILE"
-        if [ ! -d "$TARGET_DIR" ]; then
-            echo "Error: Default profile '$DEFAULT_PROFILE' does not exist. Run: $CMD_NAME new $DEFAULT_PROFILE"
-            exit 1
+        if [ -n "$MULTIGRAVITY_DEFAULT_PROFILE" ] && [ -d "$PROFILES_DIR/$MULTIGRAVITY_DEFAULT_PROFILE" ]; then
+            SELECTED_PROFILE="$MULTIGRAVITY_DEFAULT_PROFILE"
+        else
+            mapfile -t avail_profiles < <(ls -1 "$PROFILES_DIR" 2>/dev/null || true)
+            if [ "${#avail_profiles[@]}" -eq 1 ] && [ -n "${avail_profiles[0]}" ]; then
+                SELECTED_PROFILE="${avail_profiles[0]}"
+            elif [ "${#avail_profiles[@]}" -eq 0 ]; then
+                echo "Error: No profiles found. Create one first using: $CMD_NAME new <profile_name>"
+                exit 1
+            else
+                echo "Multiple profiles found. Please specify which profile to run: $CMD_NAME <profile> $*"
+                echo "Available profiles:"
+                for p in "${avail_profiles[@]}"; do
+                    echo "  • $p"
+                done
+                exit 1
+            fi
         fi
+        TARGET_DIR="$PROFILES_DIR/$SELECTED_PROFILE"
         setup_profile_environment "$TARGET_DIR"
-        echo "Starting agy with default profile '$DEFAULT_PROFILE'..."
+        echo "Starting agy with profile '$SELECTED_PROFILE'..."
         HOME="$TARGET_DIR" exec agy "$@"
         ;;
 
