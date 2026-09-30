@@ -1,19 +1,49 @@
 # multigravity-cli
 
-> Multi-account profile, session, and quota manager for the **Google Antigravity CLI (`agy`)**.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-brightgreen.svg)]()
+[![Shell](https://img.shields.io/badge/Shell-bash%20%7C%20zsh-orange.svg)]()
 
-`multigravity` allows you to manage multiple isolated Antigravity accounts (e.g., personal, work, friends, or team members) on a single machine. It seamlessly isolates authentication tokens, configurations, conversation summaries, and history without interfering with your shared Git identity or SSH keys.
+> Lightweight multi-account profile, session, and quota manager for the **Google Antigravity CLI (`agy`)**.
+
+`multigravity` enables developers to maintain multiple isolated Antigravity accounts (e.g., personal, work, client, or shared team accounts) on a single machine. It seamlessly segregates OAuth credentials, session state, conversation memories, and token caches while preserving global Git configuration and SSH keys.
 
 ---
 
-## ✨ Features
+## 🎯 Why multigravity?
 
-- **Profile Isolation**: Each profile maintains its own completely isolated environment under `~/.config/multigravity-profiles/<profile>/`.
-- **Parallel Sessions**: Run side-by-side terminal sessions under different accounts simultaneously.
-- **Quota Aggregator**: Inspect model quota limits (Gemini, Claude, GPT) across all configured profiles with a single command (`multigravity quotas`).
-- **Seamless Auth**: Triggers the Antigravity OAuth browser login flow per profile.
-- **Git & SSH Preservation**: Automatically symlinks your host `~/.gitconfig` and `~/.ssh` to ensure git commits and remote operations work out of the box.
-- **Zero Heavy Dependencies**: Pure, portable shell script compatible with macOS (`bash`/`zsh`) and Linux.
+By default, the Antigravity CLI (`agy`) stores all credentials, project metadata, SQLite databases, and conversation transcripts in a single directory: `~/.gemini/antigravity-cli`.
+
+This creates several challenges for power users:
+- **Account Switching Overhead**: Switching between Google accounts requires re-authenticating and overwriting existing tokens.
+- **Quota Limitations**: When your five-hour or weekly quota on one account runs low, you cannot easily switch to another without disrupting your environment.
+- **Session Bleed**: History, presence, and project cache are shared across all sessions.
+- **Side-by-Side Incompatibility**: You cannot run two `agy` instances logged into different accounts simultaneously.
+
+`multigravity` solves this by introducing **environment-isolated profile spaces** without any heavy runtime dependencies or modifying the `agy` binary.
+
+---
+
+## 🏗️ How It Works
+
+Each profile lives in its own sandbox directory under `~/.config/multigravity-profiles/<profile_name>/`. 
+
+When launching a session, `multigravity` redirects the user's home context for `agy`, ensuring complete token and conversation separation:
+
+```
+~/.config/multigravity-profiles/
+├── perso/
+│   ├── .gemini/antigravity-cli/     # Perso OAuth tokens, history, and DBs
+│   ├── .gitconfig                   # Symlink -> host ~/.gitconfig
+│   └── .ssh                         # Symlink -> host ~/.ssh
+└── work/
+    ├── .gemini/antigravity-cli/     # Work OAuth tokens, history, and DBs
+    ├── .gitconfig                   # Symlink -> host ~/.gitconfig
+    └── .ssh                         # Symlink -> host ~/.ssh
+```
+
+> [!NOTE]
+> **Preserved Identity**: Symlinking your global `.gitconfig` and `.ssh` ensures all Git commits made by agents retain your correct Git name, email, and signing credentials.
 
 ---
 
@@ -21,48 +51,54 @@
 
 ### 1. Installation
 
-You can install `multigravity` directly into `~/.local/bin`:
-
+#### Option A: Clone & Install (Recommended)
 ```bash
-# Clone the repository
 git clone https://github.com/your-username/multigravity-cli.git
 cd multigravity-cli
-
-# Run installer
 ./install.sh
 ```
 
-Or copy the script manually:
-
+#### Option B: Standalone One-Liner
 ```bash
 mkdir -p ~/.local/bin ~/.config/multigravity-profiles
-cp bin/multigravity ~/.local/bin/multigravity
+curl -fsSL https://raw.githubusercontent.com/your-username/multigravity-cli/master/bin/multigravity -o ~/.local/bin/multigravity
 chmod +x ~/.local/bin/multigravity
 ```
 
-Ensure `~/.local/bin` is in your `$PATH`:
+#### Option C: Via NPM
+```bash
+cd multigravity-cli
+npm link
+```
+
+Ensure `~/.local/bin` is in your `$PATH` (if not already):
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
-*(Add this to your `~/.zshrc` or `~/.bashrc` to make it permanent.)*
+*(Add the above line to your `~/.zshrc` or `~/.bashrc` to make it permanent).*
 
 ---
 
-### 2. Creating Profiles
+### 2. Setting Up Profiles
 
-Set up profiles for different Google accounts:
-
+#### Create a New Account Profile
+Run `multigravity new <profile>` to launch the isolated browser OAuth flow:
 ```bash
-# Set up your primary profile:
+# Personal profile
 multigravity new perso
 
-# Set up a second account (e.g. friend or work):
-multigravity new pote
+# Work or secondary profile
+multigravity new work
+```
+Follow the OAuth prompt in your browser. Once authorized, the profile is configured and verified.
+
+#### (Optional) Import Current Machine Session
+If you are already logged in to `agy` on your machine and want to migrate that existing session directly into a profile without re-authenticating:
+```bash
+multigravity import perso
 ```
 
-For each command, follow the OAuth prompt displayed in the browser/terminal to complete the authentication.
-
-Verify both profiles are registered:
+#### Verify Registered Profiles
 ```bash
 multigravity list
 ```
@@ -71,37 +107,39 @@ multigravity list
 
 ### 3. Running Side-by-Side Sessions
 
-Open multiple terminals or split panes (e.g., in iTerm2, VS Code, or tmux):
+Launch interactive sessions under separate profiles in separate terminal tabs, windows, or tmux panes:
 
-* **Terminal 1:**
+* **Pane 1 (Personal Account):**
   ```bash
   multigravity perso
   ```
 
-* **Terminal 2:**
+* **Pane 2 (Work / Secondary Account):**
   ```bash
-  multigravity pote
+  multigravity work
   ```
 
-Both instances run independently with separate sessions, token refreshes, and history!
+Both instances execute simultaneously with full token, cache, and history isolation.
 
-You can also pass any `agy` arguments or flags directly:
+#### Passing Flags and Arguments
+Any additional CLI arguments are forwarded directly to `agy`:
 ```bash
 multigravity perso --model gemini-2.5-flash
-multigravity pote -p "explain async in Rust"
+multigravity work -p "Explain distributed locks in Go"
+multigravity work --continue
 ```
 
 ---
 
 ### 4. Checking Quotas Across All Accounts
 
-Inspect quota limits for all configured accounts in one shot:
+Inspect model quota limits (Gemini, Claude, GPT) across all configured profiles with a single command:
 
 ```bash
 multigravity quotas
 ```
 
-Example output:
+**Example output:**
 ```text
 === Quota for profile: perso ===
 Quota:
@@ -110,12 +148,12 @@ Gemini Models          Five Hour Limit Remaining  18%   2026-10-01T00:48:28Z
 Claude and GPT models  Weekly Limit Remaining     66%   2026-10-07T00:32:37Z
 Claude and GPT models  Five Hour Limit Remaining  100%  2026-10-01T02:50:32Z
 
-=== Quota for profile: pote ===
+=== Quota for profile: work ===
 Quota:
-Gemini Models          Weekly Limit Remaining     100%  2026-10-07T22:00:00Z
-Gemini Models          Five Hour Limit Remaining  100%  2026-10-01T03:00:00Z
-Claude and GPT models  Weekly Limit Remaining     100%  2026-10-07T22:00:00Z
-Claude and GPT models  Five Hour Limit Remaining  100%  2026-10-01T03:00:00Z
+Gemini Models          Weekly Limit Remaining     94%   2026-10-07T18:12:00Z
+Gemini Models          Five Hour Limit Remaining  82%   2026-10-01T04:10:15Z
+Claude and GPT models  Weekly Limit Remaining     100%  2026-10-07T18:12:00Z
+Claude and GPT models  Five Hour Limit Remaining  100%  2026-10-01T04:10:15Z
 ```
 
 ---
@@ -124,36 +162,45 @@ Claude and GPT models  Five Hour Limit Remaining  100%  2026-10-01T03:00:00Z
 
 | Command | Description |
 | :--- | :--- |
-| `multigravity new <profile>` | Creates a profile directory and runs the initial OAuth login flow. |
-| `multigravity import <profile>` | Copies the current default `~/.gemini/antigravity-cli` into a named profile. |
-| `multigravity list` | Lists all created profiles. |
-| `multigravity quotas` | Iterates over each profile and prints current model quotas. |
-| `multigravity delete <profile>` | Removes a profile and its associated data directory. |
-| `multigravity <profile> [args...]` | Launches `agy` with the specified profile and optional arguments. |
-| `multigravity help` | Displays usage and help information. |
+| `multigravity new <profile>` | Creates a profile directory and executes the initial OAuth authentication flow. |
+| `multigravity import <profile>` | Clones the host's existing `~/.gemini/antigravity-cli` credentials into the named profile. |
+| `multigravity list` | Lists all available configured profiles. |
+| `multigravity quotas` | Iterates across all profiles and outputs active model quotas. |
+| `multigravity delete <profile>` | Prompts for confirmation and deletes the profile directory. |
+| `multigravity <profile> [args...]` | Starts `agy` with the chosen profile, forwarding any arguments. |
+| `multigravity help`, `--help`, `-h` | Displays the help and usage menu. |
 
 ---
 
-## 📂 Profile Architecture
+## ⚙️ Configuration & Environment Variables
 
-Each profile is stored under `~/.config/multigravity-profiles/<profile_name>`:
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `MULTIGRAVITY_PROFILES_DIR` | `~/.config/multigravity-profiles` | Base directory where all isolated profile workspaces are stored. |
+| `REAL_HOME` | `$HOME` | Host home directory used for resolving global `.gitconfig` and `.ssh` links. |
 
+You can override the profiles storage directory by exporting `MULTIGRAVITY_PROFILES_DIR`:
+```bash
+export MULTIGRAVITY_PROFILES_DIR="$HOME/my-profiles"
 ```
-~/.config/multigravity-profiles/
-├── perso/
-│   ├── .gemini/
-│   │   └── antigravity-cli/   # Isolated tokens, conversation logs, and SQLite DBs
-│   ├── .gitconfig             # Symlink -> host ~/.gitconfig
-│   └── .ssh                   # Symlink -> host ~/.ssh
-└── pote/
-    ├── .gemini/
-    │   └── antigravity-cli/   # Isolated tokens, conversation logs, and SQLite DBs
-    ├── .gitconfig             # Symlink -> host ~/.gitconfig
-    └── .ssh                   # Symlink -> host ~/.ssh
+
+---
+
+## 🧹 Uninstallation
+
+To remove `multigravity` from your system:
+
+```bash
+./uninstall.sh
+```
+
+To also clean up all stored profile data and credentials:
+```bash
+rm -rf ~/.config/multigravity-profiles
 ```
 
 ---
 
 ## 📄 License
 
-MIT
+[MIT](LICENSE)
