@@ -1,0 +1,24 @@
+{
+  "name": "multigravity-cli",
+  "version": "1.0.0",
+  "description": "Multi-profile session and quota manager for Antigravity CLI (agy)",
+  "main": "bin/multigravity",
+  "bin": {
+    "multigravity": "bin/multigravity"
+  },
+  "scripts": {
+    "install-global": "./install.sh",
+    "uninstall-global": "./uninstall.sh",
+    "test": "bash -n bin/multigravity"
+  },
+  "keywords": [
+    "antigravity",
+    "agy",
+    "cli",
+    "profile-manager",
+    "multi-account",
+    "quotas"
+  ],
+  "author": "",
+  "license": "MIT"
+}
