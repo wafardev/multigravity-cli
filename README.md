@@ -131,12 +131,29 @@ Launch interactive sessions under separate profiles in separate terminal tabs, w
 
 Both instances execute simultaneously with full token, cache, and history isolation.
 
-#### Passing Flags and Arguments
+#### Resuming Conversations Across Profiles
+Because conversations and history are shared globally, you can resume any conversation under any account:
+
+```bash
+# View recent conversation IDs:
+mgy conversations
+
+# Resume a specific conversation by ID in perso:
+mgy perso --conversation=c4e2acbb-a968-4591-aa3c-a09cf0bf9e22
+
+# Resume that SAME conversation under work to use your work quota:
+mgy work --conversation=c4e2acbb-a968-4591-aa3c-a09cf0bf9e22
+
+# Continue the most recent conversation:
+mgy perso -c
+mgy work --continue
+```
+
+#### Passing Other Flags and Arguments
 Any additional CLI arguments are forwarded directly to `agy`:
 ```bash
 mgy perso --model gemini-2.5-flash
 mgy work -p "Explain distributed locks in Go"
-mgy work --continue
 ```
 
 ---
@@ -170,6 +187,9 @@ Both `mgy` and `multigravity` can be used interchangeably:
 
 | Command | Description |
 | :--- | :--- |
+| `mgy <profile> --conversation=<id>` | Resumes a specific conversation by ID (same as `agy --conversation=<id>`). |
+| `mgy <profile> -c`, `--continue` | Continues the most recent conversation. |
+| `mgy conversations` | Lists recent conversation IDs, titles, and activity timestamps. |
 | `mgy new <profile>` | Creates a profile directory and executes the initial OAuth authentication flow. |
 | `mgy import [profile]` | Links or imports the host's existing `~/.gemini/antigravity-cli` global configuration into the named profile (default: `perso`). |
 | `mgy list` | Lists all available configured profiles. |

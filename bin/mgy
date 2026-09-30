@@ -6,8 +6,12 @@
 CMD_NAME="$(basename "$0")"
 [ "$CMD_NAME" != "multigravity" ] && CMD_NAME="mgy"
 
-PROFILES_DIR="${MULTIGRAVITY_PROFILES_DIR:-$HOME/.config/multigravity-profiles}"
-REAL_HOME="${REAL_HOME:-$HOME}"
+if [[ "$HOME" == *"/.config/multigravity-profiles"* ]]; then
+    REAL_HOME="${REAL_HOME:-${HOME%%/.config/multigravity-profiles*}}"
+else
+    REAL_HOME="${REAL_HOME:-$HOME}"
+fi
+PROFILES_DIR="${MULTIGRAVITY_PROFILES_DIR:-$REAL_HOME/.config/multigravity-profiles}"
 
 print_help() {
     cat << EOF
@@ -18,17 +22,22 @@ Commands:
   import <profile>       Import host ~/.gemini session into a profile
   list                   List all existing profiles
   quotas                 Check model quota usage across all profiles
+  conversations          List recent conversations and their IDs
   delete <profile>       Delete an existing profile
   help, --help, -h       Show this help message
   <profile> [agy args]   Start agy session using the specified profile
 
+Resume & Conversation Flags (same as agy):
+  $CMD_NAME <profile> --conversation=<id>   Resume a specific conversation by ID
+  $CMD_NAME <profile> -c, --continue       Continue the most recent conversation
+
 Examples:
-  $CMD_NAME new work           # Set up 'work' profile with Google login
-  $CMD_NAME import perso       # Link or copy host session into 'perso'
-  $CMD_NAME list               # List all profiles
-  $CMD_NAME perso              # Start interactive agy session with 'perso'
-  $CMD_NAME work -p "/quota"   # Run agy command under 'work'
-  $CMD_NAME quotas             # Inspect quotas across all profiles
+  $CMD_NAME perso --conversation=<id>      # Resume conversation in 'perso'
+  $CMD_NAME work -c                        # Continue latest chat under 'work'
+  $CMD_NAME conversations                  # View list of recent conversation IDs
+  $CMD_NAME perso                          # Start interactive agy session with 'perso'
+  $CMD_NAME work -p "/quota"               # Check quota under 'work'
+  $CMD_NAME quotas                         # Inspect quotas across all profiles
 EOF
 }
 
@@ -209,6 +218,30 @@ case "$1" in
 
     "")
         usage
+        ;;
+
+    conversations|history|chats)
+        echo "Recent conversations:"
+        DB="$REAL_HOME/.gemini/antigravity-cli/conversation_summaries.db"
+        if [ -f "$DB" ] && command -v sqlite3 >/dev/null 2>&1; then
+            sqlite3 -header -column "$DB" \
+              "SELECT conversation_id AS ID, title AS Title, datetime(last_modified_time) AS Last_Active FROM conversation_summaries ORDER BY last_modified_time DESC LIMIT 10;"
+        else
+            echo "(no conversation history database found)"
+        fi
+        ;;
+
+    -*)
+        # Flags passed without an explicit profile name (e.g. mgy --conversation=<id>, mgy -c)
+        DEFAULT_PROFILE="${MULTIGRAVITY_DEFAULT_PROFILE:-perso}"
+        TARGET_DIR="$PROFILES_DIR/$DEFAULT_PROFILE"
+        if [ ! -d "$TARGET_DIR" ]; then
+            echo "Error: Default profile '$DEFAULT_PROFILE' does not exist. Run: $CMD_NAME new $DEFAULT_PROFILE"
+            exit 1
+        fi
+        setup_profile_environment "$TARGET_DIR"
+        echo "Starting agy with default profile '$DEFAULT_PROFILE'..."
+        HOME="$TARGET_DIR" exec agy "$@"
         ;;
 
     *)
