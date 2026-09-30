@@ -8,44 +8,52 @@
 
 `mgy` (short for `multigravity`) enables developers to maintain multiple isolated Antigravity accounts (e.g., personal, work, client, or shared team accounts) on a single machine. Just as `agy` is the CLI for Antigravity, `mgy` is your tool for managing multi-gravity profiles.
 
-It seamlessly segregates OAuth credentials, session state, conversation memories, and token caches while preserving global Git configuration and SSH keys.
+It isolates Google OAuth credentials and quotas per profile, while keeping your conversation history, agent memories, MCP servers, and global configurations unified across all profiles.
 
 ---
 
 ## 🎯 Why mgy?
 
-By default, the Antigravity CLI (`agy`) stores all credentials, project metadata, SQLite databases, and conversation transcripts in a single directory: `~/.gemini/antigravity-cli`.
+By default, the Antigravity CLI (`agy`) binds your credentials and your conversation history together in a single global directory: `~/.gemini/antigravity-cli`.
 
 This creates several challenges for power users:
-- **Account Switching Overhead**: Switching between Google accounts requires re-authenticating and overwriting existing tokens.
-- **Quota Limitations**: When your five-hour or weekly quota on one account runs low, you cannot easily switch to another without disrupting your environment.
-- **Session Bleed**: History, presence, and project cache are shared across all sessions.
-- **Side-by-Side Incompatibility**: You cannot run two `agy` instances logged into different accounts simultaneously.
+- **Quota Exhaustion**: When your five-hour or weekly quota on one account runs low, you cannot switch accounts without losing active session context or overwriting tokens.
+- **Account Switching Overhead**: Switching between personal and work Google accounts requires constantly re-authenticating.
+- **Unified History Requirement**: When you switch accounts, you still want full access to your previous conversations (`agy -c`), chat history, prompt history, and MCP tools.
+- **Side-by-Side Sessions**: You cannot run two `agy` instances logged into different accounts simultaneously.
 
-`mgy` solves this by introducing **environment-isolated profile spaces** without any heavy runtime dependencies or modifying the `agy` binary.
+`mgy` solves this by **sharing the global configuration and conversation history** across all profiles while **strictly isolating the authentication tokens and quotas**.
 
 ---
 
 ## 🏗️ How It Works
 
-Each profile lives in its own sandbox directory under `~/.config/multigravity-profiles/<profile_name>/`. 
+`mgy` solves the multi-account challenge with a unified-history, isolated-token architecture:
 
-When launching a session, `mgy` redirects the user's home context for `agy`, ensuring complete token and conversation separation:
+**All profiles share your global conversations, history, settings, and MCP tools**, while each profile maintains its **own independent Google OAuth token and quota**.
+
+When launching a session with `mgy <profile>`, the environment redirects `HOME` to `~/.config/multigravity-profiles/<profile>/`:
 
 ```
 ~/.config/multigravity-profiles/
 ├── perso/
-│   ├── .gemini/antigravity-cli/     # Perso OAuth tokens, history, and DBs
+│   ├── .gemini/
+│   │   └── antigravity-cli/         # Symlink -> host ~/.gemini/antigravity-cli (SHARED)
 │   ├── .gitconfig                   # Symlink -> host ~/.gitconfig
-│   └── .ssh                         # Symlink -> host ~/.ssh
+│   ├── .ssh                         # Symlink -> host ~/.ssh
+│   └── Library/Keychains/           # Symlink -> host Keychain (Personal OAuth token)
 └── work/
-    ├── .gemini/antigravity-cli/     # Work OAuth tokens, history, and DBs
+    ├── .gemini/
+    │   └── antigravity-cli/         # Symlink -> host ~/.gemini/antigravity-cli (SHARED)
     ├── .gitconfig                   # Symlink -> host ~/.gitconfig
-    └── .ssh                         # Symlink -> host ~/.ssh
+    ├── .ssh                         # Symlink -> host ~/.ssh
+    └── Library/Keychains/           # Isolated Keychain (Work OAuth token)
 ```
 
 > [!NOTE]
-> **Preserved Identity**: Symlinking your global `.gitconfig` and `.ssh` ensures all Git commits made by agents retain your correct Git name, email, and signing credentials.
+> - **Unified History & Memory**: Because `.gemini/antigravity-cli` is shared across all profiles, all your conversations, chat summaries, CLI settings, prompt history (`history.jsonl`), and MCP servers are always preserved. You can resume any conversation across different accounts seamlessly (`mgy work -c`).
+> - **Isolated Credentials & Quota**: Each non-default profile maintains its own isolated OAuth token. When you switch to `work`, you draw from your work account's quota limits without affecting your personal account or losing any context.
+> - **Preserved Identity**: Host `.gitconfig` and `.ssh` are symlinked across all profiles, ensuring git commits always retain your author name and email.
 
 ---
 
@@ -59,6 +67,7 @@ git clone https://github.com/your-username/multigravity-cli.git
 cd multigravity-cli
 ./install.sh
 ```
+*The installer automatically links your global config to `perso` and prepares the `work` workspace!*
 
 #### Option B: Standalone One-Liner
 ```bash
@@ -80,33 +89,29 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 *(Add the above line to your `~/.zshrc` or `~/.bashrc` to make it permanent).*
 
-Both `mgy` and `multigravity` commands will be available in your shell!
+Both `mgy` and `multigravity` commands are available in your shell!
 
 ---
 
-### 2. Setting Up Profiles
+### 2. Available Profiles & Setup
 
-#### Create a New Account Profile
-Run `mgy new <profile>` to launch the isolated browser OAuth flow:
-```bash
-# Personal profile
-mgy new perso
-
-# Work or secondary profile
-mgy new work
-```
-Follow the OAuth prompt in your browser. Once authorized, the profile is configured and verified.
-
-#### (Optional) Import Current Machine Session
-If you are already logged in to `agy` on your machine and want to migrate that existing session directly into a profile without re-authenticating:
-```bash
-mgy import perso
-```
-
-#### Verify Registered Profiles
+#### Check Registered Profiles
 ```bash
 mgy list
 ```
+Output:
+```text
+Available profiles:
+perso
+work
+```
+
+- **`perso` is already ready**: It links directly to your global host configuration (`~/.gemini/antigravity-cli`).
+- **`work` (or new profile)**: To authenticate your work or secondary account, run:
+  ```bash
+  mgy new work
+  ```
+  Follow the OAuth prompt in your browser. Once completed, `work` is ready with its own isolated token!
 
 ---
 
@@ -114,12 +119,12 @@ mgy list
 
 Launch interactive sessions under separate profiles in separate terminal tabs, windows, or tmux panes:
 
-* **Pane 1 (Personal Account):**
+* **Pane 1 (Personal Account - Global Config):**
   ```bash
   mgy perso
   ```
 
-* **Pane 2 (Work / Secondary Account):**
+* **Pane 2 (Work Account - Isolated):**
   ```bash
   mgy work
   ```
@@ -148,17 +153,13 @@ mgy quotas
 ```text
 === Quota for profile: perso ===
 Quota:
-Gemini Models          Weekly Limit Remaining     53%   2026-10-06T13:07:58Z
-Gemini Models          Five Hour Limit Remaining  18%   2026-10-01T00:48:28Z
+Gemini Models          Weekly Limit Remaining     50%   2026-10-06T13:07:58Z
+Gemini Models          Five Hour Limit Remaining  1%    2026-10-01T00:48:28Z
 Claude and GPT models  Weekly Limit Remaining     66%   2026-10-07T00:32:37Z
-Claude and GPT models  Five Hour Limit Remaining  100%  2026-10-01T02:50:32Z
+Claude and GPT models  Five Hour Limit Remaining  100%  2026-10-01T03:08:15Z
 
 === Quota for profile: work ===
-Quota:
-Gemini Models          Weekly Limit Remaining     94%   2026-10-07T18:12:00Z
-Gemini Models          Five Hour Limit Remaining  82%   2026-10-01T04:10:15Z
-Claude and GPT models  Weekly Limit Remaining     100%  2026-10-07T18:12:00Z
-Claude and GPT models  Five Hour Limit Remaining  100%  2026-10-01T04:10:15Z
+Profile 'work' is not authenticated yet. Run: mgy new work
 ```
 
 ---
@@ -170,7 +171,7 @@ Both `mgy` and `multigravity` can be used interchangeably:
 | Command | Description |
 | :--- | :--- |
 | `mgy new <profile>` | Creates a profile directory and executes the initial OAuth authentication flow. |
-| `mgy import <profile>` | Clones the host's existing `~/.gemini/antigravity-cli` credentials into the named profile. |
+| `mgy import [profile]` | Links or imports the host's existing `~/.gemini/antigravity-cli` global configuration into the named profile (default: `perso`). |
 | `mgy list` | Lists all available configured profiles. |
 | `mgy quotas` | Iterates across all profiles and outputs active model quotas. |
 | `mgy delete <profile>` | Prompts for confirmation and deletes the profile directory. |
