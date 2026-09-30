@@ -3,12 +3,12 @@ set -e
 
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
-if [ -f "$INSTALL_DIR/multigravity" ]; then
-    rm -f "$INSTALL_DIR/multigravity"
-    echo "Removed $INSTALL_DIR/multigravity."
-else
-    echo "multigravity was not found in $INSTALL_DIR."
-fi
+for bin in mgy multigravity; do
+    if [ -f "$INSTALL_DIR/$bin" ] || [ -L "$INSTALL_DIR/$bin" ]; then
+        rm -f "$INSTALL_DIR/$bin"
+        echo "Removed $INSTALL_DIR/$bin."
+    fi
+done
 
 echo ""
 echo "Note: Profile data in ~/.config/multigravity-profiles was preserved."

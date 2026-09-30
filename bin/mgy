@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+
+# mgy (multigravity) - Profile manager for Antigravity CLI (agy)
+# Manages isolated credentials, sessions, and configurations per profile.
+
+CMD_NAME="$(basename "$0")"
+[ "$CMD_NAME" != "multigravity" ] && CMD_NAME="mgy"
+
+PROFILES_DIR="${MULTIGRAVITY_PROFILES_DIR:-$HOME/.config/multigravity-profiles}"
+REAL_HOME="${REAL_HOME:-$HOME}"
+
+print_help() {
+    cat << EOF
+Usage: $CMD_NAME [command] [options]
+
+Commands:
+  new <profile>          Create a new isolated profile and authenticate
+  import <profile>       Import current default ~/.gemini session into a new profile
+  list                   List all existing profiles
+  quotas                 Check model quota usage across all profiles
+  delete <profile>       Delete an existing profile
+  help, --help, -h       Show this help message
+  <profile> [agy args]   Start agy session using the specified profile
+
+Examples:
+  $CMD_NAME new perso          # Set up 'perso' profile with Google login
+  $CMD_NAME new pote           # Set up 'pote' profile
+  $CMD_NAME list               # List all profiles
+  $CMD_NAME perso              # Start interactive agy session with 'perso'
+  $CMD_NAME pote -p "/quota"   # Run agy command under 'pote'
+  $CMD_NAME quotas             # Inspect quotas across all profiles
+EOF
+}
+
+usage() {
+    print_help
+    exit 1
+}
+
+link_shared_configs() {
+    local target="$1"
+    # Symlink user's global gitconfig so git commits retain author name & email
+    if [ -f "$REAL_HOME/.gitconfig" ] && [ ! -e "$target/.gitconfig" ]; then
+        ln -sf "$REAL_HOME/.gitconfig" "$target/.gitconfig"
+    fi
+    # Symlink ssh keys if present for git remote operations
+    if [ -d "$REAL_HOME/.ssh" ] && [ ! -e "$target/.ssh" ]; then
+        ln -sf "$REAL_HOME/.ssh" "$target/.ssh"
+    fi
+}
+
+case "$1" in
+    new)
+        shift
+        PROFILE_NAME="$1"
+        [ -z "$PROFILE_NAME" ] && usage
+        TARGET_DIR="$PROFILES_DIR/$PROFILE_NAME"
+
+        if [ -d "$TARGET_DIR" ]; then
+            echo "Profile '$PROFILE_NAME' already exists at: $TARGET_DIR"
+            printf "Re-authenticate profile '%s'? [y/N]: " "$PROFILE_NAME"
+            read -r resp
+            case "$resp" in
+                [yY][eE][sS]|[yY]) ;;
+                *) echo "Aborted."; exit 0 ;;
+            esac
+        fi
+
+        mkdir -p "$TARGET_DIR"
+        link_shared_configs "$TARGET_DIR"
+
+        echo "Setting up profile '$PROFILE_NAME'..."
+        # agy authenticates automatically on startup when unauthenticated.
+        # -p "/quota" triggers OAuth login in the browser/terminal and displays quotas once authenticated.
+        if HOME="$TARGET_DIR" agy auth login 2>/dev/null; then
+            :
+        else
+            HOME="$TARGET_DIR" agy -p "/quota" || HOME="$TARGET_DIR" agy || true
+        fi
+        echo "Profile '$PROFILE_NAME' is ready!"
+        ;;
+
+    import)
+        shift
+        PROFILE_NAME="$1"
+        [ -z "$PROFILE_NAME" ] && usage
+        TARGET_DIR="$PROFILES_DIR/$PROFILE_NAME"
+
+        if [ ! -d "$REAL_HOME/.gemini/antigravity-cli" ]; then
+            echo "Error: Default antigravity configuration not found at $REAL_HOME/.gemini/antigravity-cli"
+            exit 1
+        fi
+
+        if [ -d "$TARGET_DIR" ]; then
+            echo "Error: Profile '$PROFILE_NAME' already exists at $TARGET_DIR."
+            exit 1
+        fi
+
+        mkdir -p "$TARGET_DIR/.gemini"
+        echo "Importing current default profile into '$PROFILE_NAME'..."
+        cp -R "$REAL_HOME/.gemini/antigravity-cli" "$TARGET_DIR/.gemini/"
+        link_shared_configs "$TARGET_DIR"
+        echo "Profile '$PROFILE_NAME' imported successfully!"
+        ;;
+
+    list)
+        echo "Available profiles:"
+        if [ -d "$PROFILES_DIR" ] && [ -n "$(ls -A "$PROFILES_DIR" 2>/dev/null)" ]; then
+            ls -1 "$PROFILES_DIR" 2>/dev/null
+        else
+            echo "(no profiles found)"
+        fi
+        ;;
+
+    quotas)
+        found=0
+        if [ -d "$PROFILES_DIR" ]; then
+            for profile in "$PROFILES_DIR"/*; do
+                if [ -d "$profile" ]; then
+                    found=1
+                    name=$(basename "$profile")
+                    echo -e "\n=== Quota for profile: $name ==="
+                    # Fallback gracefully between native 'agy quota' and slash command 'agy -p "/quota"'
+                    if ! HOME="$profile" agy quota 2>/dev/null; then
+                        HOME="$profile" agy -p "/quota"
+                    fi
+                fi
+            done
+        fi
+        if [ "$found" -eq 0 ]; then
+            echo "(no profiles found in $PROFILES_DIR)"
+        fi
+        ;;
+
+    delete|rm|remove)
+        shift
+        PROFILE_NAME="$1"
+        [ -z "$PROFILE_NAME" ] && usage
+        TARGET_DIR="$PROFILES_DIR/$PROFILE_NAME"
+
+        if [ ! -d "$TARGET_DIR" ]; then
+            echo "Error: profile '$PROFILE_NAME' does not exist."
+            exit 1
+        fi
+
+        printf "Are you sure you want to delete profile '%s'? [y/N]: " "$PROFILE_NAME"
+        read -r resp
+        case "$resp" in
+            [yY][eE][sS]|[yY])
+                rm -rf "$TARGET_DIR"
+                echo "Profile '$PROFILE_NAME' deleted."
+                ;;
+            *)
+                echo "Aborted."
+                ;;
+        esac
+        ;;
+
+    help|--help|-h)
+        print_help
+        exit 0
+        ;;
+
+    "")
+        usage
+        ;;
+
+    *)
+        TARGET_DIR="$PROFILES_DIR/$1"
+        if [ ! -d "$TARGET_DIR" ]; then
+            echo "Error: profile '$1' does not exist. Create it first using: $CMD_NAME new $1"
+            exit 1
+        fi
+        link_shared_configs "$TARGET_DIR"
+        echo "Starting agy with profile '$1'..."
+        HOME="$TARGET_DIR" exec agy "${@:2}"
+        ;;
+esac

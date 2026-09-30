@@ -1,4 +1,4 @@
-# multigravity-cli
+# mgy (multigravity-cli)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-brightgreen.svg)]()
@@ -6,11 +6,13 @@
 
 > Lightweight multi-account profile, session, and quota manager for the **Google Antigravity CLI (`agy`)**.
 
-`multigravity` enables developers to maintain multiple isolated Antigravity accounts (e.g., personal, work, client, or shared team accounts) on a single machine. It seamlessly segregates OAuth credentials, session state, conversation memories, and token caches while preserving global Git configuration and SSH keys.
+`mgy` (short for `multigravity`) enables developers to maintain multiple isolated Antigravity accounts (e.g., personal, work, client, or shared team accounts) on a single machine. Just as `agy` is the CLI for Antigravity, `mgy` is your tool for managing multi-gravity profiles.
+
+It seamlessly segregates OAuth credentials, session state, conversation memories, and token caches while preserving global Git configuration and SSH keys.
 
 ---
 
-## 🎯 Why multigravity?
+## 🎯 Why mgy?
 
 By default, the Antigravity CLI (`agy`) stores all credentials, project metadata, SQLite databases, and conversation transcripts in a single directory: `~/.gemini/antigravity-cli`.
 
@@ -20,7 +22,7 @@ This creates several challenges for power users:
 - **Session Bleed**: History, presence, and project cache are shared across all sessions.
 - **Side-by-Side Incompatibility**: You cannot run two `agy` instances logged into different accounts simultaneously.
 
-`multigravity` solves this by introducing **environment-isolated profile spaces** without any heavy runtime dependencies or modifying the `agy` binary.
+`mgy` solves this by introducing **environment-isolated profile spaces** without any heavy runtime dependencies or modifying the `agy` binary.
 
 ---
 
@@ -28,7 +30,7 @@ This creates several challenges for power users:
 
 Each profile lives in its own sandbox directory under `~/.config/multigravity-profiles/<profile_name>/`. 
 
-When launching a session, `multigravity` redirects the user's home context for `agy`, ensuring complete token and conversation separation:
+When launching a session, `mgy` redirects the user's home context for `agy`, ensuring complete token and conversation separation:
 
 ```
 ~/.config/multigravity-profiles/
@@ -61,8 +63,9 @@ cd multigravity-cli
 #### Option B: Standalone One-Liner
 ```bash
 mkdir -p ~/.local/bin ~/.config/multigravity-profiles
-curl -fsSL https://raw.githubusercontent.com/your-username/multigravity-cli/master/bin/multigravity -o ~/.local/bin/multigravity
-chmod +x ~/.local/bin/multigravity
+curl -fsSL https://raw.githubusercontent.com/your-username/multigravity-cli/master/bin/mgy -o ~/.local/bin/mgy
+chmod +x ~/.local/bin/mgy
+ln -sf mgy ~/.local/bin/multigravity
 ```
 
 #### Option C: Via NPM
@@ -71,36 +74,38 @@ cd multigravity-cli
 npm link
 ```
 
-Ensure `~/.local/bin` is in your `$PATH` (if not already):
+Ensure `~/.local/bin` is in your `$PATH`:
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 *(Add the above line to your `~/.zshrc` or `~/.bashrc` to make it permanent).*
+
+Both `mgy` and `multigravity` commands will be available in your shell!
 
 ---
 
 ### 2. Setting Up Profiles
 
 #### Create a New Account Profile
-Run `multigravity new <profile>` to launch the isolated browser OAuth flow:
+Run `mgy new <profile>` to launch the isolated browser OAuth flow:
 ```bash
 # Personal profile
-multigravity new perso
+mgy new perso
 
 # Work or secondary profile
-multigravity new work
+mgy new work
 ```
 Follow the OAuth prompt in your browser. Once authorized, the profile is configured and verified.
 
 #### (Optional) Import Current Machine Session
 If you are already logged in to `agy` on your machine and want to migrate that existing session directly into a profile without re-authenticating:
 ```bash
-multigravity import perso
+mgy import perso
 ```
 
 #### Verify Registered Profiles
 ```bash
-multigravity list
+mgy list
 ```
 
 ---
@@ -111,12 +116,12 @@ Launch interactive sessions under separate profiles in separate terminal tabs, w
 
 * **Pane 1 (Personal Account):**
   ```bash
-  multigravity perso
+  mgy perso
   ```
 
 * **Pane 2 (Work / Secondary Account):**
   ```bash
-  multigravity work
+  mgy work
   ```
 
 Both instances execute simultaneously with full token, cache, and history isolation.
@@ -124,9 +129,9 @@ Both instances execute simultaneously with full token, cache, and history isolat
 #### Passing Flags and Arguments
 Any additional CLI arguments are forwarded directly to `agy`:
 ```bash
-multigravity perso --model gemini-2.5-flash
-multigravity work -p "Explain distributed locks in Go"
-multigravity work --continue
+mgy perso --model gemini-2.5-flash
+mgy work -p "Explain distributed locks in Go"
+mgy work --continue
 ```
 
 ---
@@ -136,7 +141,7 @@ multigravity work --continue
 Inspect model quota limits (Gemini, Claude, GPT) across all configured profiles with a single command:
 
 ```bash
-multigravity quotas
+mgy quotas
 ```
 
 **Example output:**
@@ -160,15 +165,17 @@ Claude and GPT models  Five Hour Limit Remaining  100%  2026-10-01T04:10:15Z
 
 ## 📖 Command Reference
 
+Both `mgy` and `multigravity` can be used interchangeably:
+
 | Command | Description |
 | :--- | :--- |
-| `multigravity new <profile>` | Creates a profile directory and executes the initial OAuth authentication flow. |
-| `multigravity import <profile>` | Clones the host's existing `~/.gemini/antigravity-cli` credentials into the named profile. |
-| `multigravity list` | Lists all available configured profiles. |
-| `multigravity quotas` | Iterates across all profiles and outputs active model quotas. |
-| `multigravity delete <profile>` | Prompts for confirmation and deletes the profile directory. |
-| `multigravity <profile> [args...]` | Starts `agy` with the chosen profile, forwarding any arguments. |
-| `multigravity help`, `--help`, `-h` | Displays the help and usage menu. |
+| `mgy new <profile>` | Creates a profile directory and executes the initial OAuth authentication flow. |
+| `mgy import <profile>` | Clones the host's existing `~/.gemini/antigravity-cli` credentials into the named profile. |
+| `mgy list` | Lists all available configured profiles. |
+| `mgy quotas` | Iterates across all profiles and outputs active model quotas. |
+| `mgy delete <profile>` | Prompts for confirmation and deletes the profile directory. |
+| `mgy <profile> [args...]` | Starts `agy` with the chosen profile, forwarding any arguments. |
+| `mgy help`, `--help`, `-h` | Displays the help and usage menu. |
 
 ---
 
@@ -188,7 +195,7 @@ export MULTIGRAVITY_PROFILES_DIR="$HOME/my-profiles"
 
 ## 🧹 Uninstallation
 
-To remove `multigravity` from your system:
+To remove `mgy` and `multigravity` from your system:
 
 ```bash
 ./uninstall.sh

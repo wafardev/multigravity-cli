@@ -5,14 +5,15 @@ set -e
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "==> Installing multigravity to $INSTALL_DIR..."
+echo "==> Installing mgy to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$HOME/.config/multigravity-profiles"
 
-cp "$SCRIPT_DIR/bin/multigravity" "$INSTALL_DIR/multigravity"
-chmod +x "$INSTALL_DIR/multigravity"
+cp "$SCRIPT_DIR/bin/mgy" "$INSTALL_DIR/mgy"
+chmod +x "$INSTALL_DIR/mgy"
+ln -sf mgy "$INSTALL_DIR/multigravity"
 
-echo "==> Successfully installed multigravity to $INSTALL_DIR/multigravity"
+echo "==> Successfully installed mgy (and multigravity alias) to $INSTALL_DIR"
 
 # Check if INSTALL_DIR is in PATH
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
@@ -24,4 +25,4 @@ fi
 
 echo ""
 echo "Get started by running:"
-echo "  multigravity help"
+echo "  mgy help"
