@@ -21,7 +21,7 @@ Commands:
   new <profile>          Create a new isolated profile and authenticate
   import <profile>       Import host ~/.gemini session into a profile
   list                   List all existing profiles
-  quotas                 Check model quota usage across all profiles
+  quotas, quota, quotes Check model quota usage across all profiles
   conversations          List recent conversations and their IDs
   delete <profile>       Delete an existing profile
   help, --help, -h       Show this help message
@@ -164,7 +164,7 @@ case "$1" in
         fi
         ;;
 
-    quotas|quota)
+    quotas|quota|quotes|quote)
         shift
         if [ -z "$COLUMNS" ]; then
             _cols=$(tput cols 2>/dev/null || stty size 2>/dev/null | awk '{print $2}' || true)
