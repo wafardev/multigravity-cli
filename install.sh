@@ -13,7 +13,12 @@ cp "$SCRIPT_DIR/bin/mgy" "$INSTALL_DIR/mgy"
 chmod +x "$INSTALL_DIR/mgy"
 ln -sf mgy "$INSTALL_DIR/multigravity"
 
-echo "==> Successfully installed mgy (and multigravity alias) to $INSTALL_DIR"
+if [ -f "$SCRIPT_DIR/bin/mgy-quota" ]; then
+    cp "$SCRIPT_DIR/bin/mgy-quota" "$INSTALL_DIR/mgy-quota"
+    chmod +x "$INSTALL_DIR/mgy-quota"
+fi
+
+echo "==> Successfully installed mgy, multigravity, and mgy-quota to $INSTALL_DIR"
 
 # Check if INSTALL_DIR is in PATH
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then

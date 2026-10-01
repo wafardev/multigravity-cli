@@ -154,23 +154,44 @@ mgy <profile> -p "Explain distributed locks in Go"
 
 ### 4. Checking Quotas Across All Accounts
 
-Inspect model quota limits (Gemini, Claude, GPT) across all configured profiles with a single command:
+`mgy` features a built-in, multi-column **Quota Dashboard TUI** that queries the Antigravity API in parallel and displays quotas across all your profiles with live countdowns, progress bars, and critical alerts:
 
 ```bash
+# View dashboard for all profiles (auto-formats side-by-side on wide terminals)
 mgy quotas
+
+# Inspect quota for a single profile:
+mgy quotas <profile_name>
+
+# Live watch mode with auto-refresh (e.g. every 30s):
+mgy quotas -w 30
 ```
 
-**Example output:**
+**Dashboard Preview:**
 ```text
-=== Quota for profile: perso ===
-Quota:
-Gemini Models          Weekly Limit Remaining     50%   2026-10-06T13:07:58Z
-Gemini Models          Five Hour Limit Remaining  1%    2026-10-01T00:48:28Z
-Claude and GPT models  Weekly Limit Remaining     66%   2026-10-07T00:32:37Z
-Claude and GPT models  Five Hour Limit Remaining  100%  2026-10-01T03:08:15Z
-
-=== Quota for profile: work ===
-Profile 'work' is not authenticated yet. Run: mgy new work
+  QUOTA DASHBOARD                                                 │   QUOTA DASHBOARD                                                 
+  <profile_1> [PRO]                                               │   <profile_2> [PRO]                                                 
+                                                                  │                                                                   
+  23 models                                                       │   23 models                                                       
+  ──────────────────────────────────────────────────────────────│   ──────────────────────────────────────────────────────────────  
+                                                                  │                                                                   
+  ◇ Anthropic Claude                                              │   ◇ Anthropic Claude                                              
+    Opus 4.6 (Thinking)    ━━━━━━━━━━ 100.0%   4h 59m             │     Opus 4.6 (Thinking)    ━━━━━━━━━━ 100.0%   4h 59m             
+    Sonnet 4.6 (Thinking)  ━━━━━━━━━━ 100.0%   4h 59m             │     Sonnet 4.6 (Thinking)  ━━━━━━━━━━ 100.0%   4h 59m             
+                                                                  │                                                                   
+  ◆ Google Gemini                                                 │   ◆ Google Gemini                                                 
+    2.5 Pro                ━━━━━━━━━━ 100.0%  21h 43m             │     2.5 Pro                ━━━━━━━━━━ 100.0%  21h 43m             
+    3 Flash                ━━━━━━━━━━ 100.0%  21h 43m             │     3 Flash                ━━━━━━━━━━ 100.0%  21h 43m             
+    3.1 Flash Image        ━━━━━━━━━━ 100.0%  21h 43m             │     3.1 Flash Image        ━━━━━━━━━━ 100.0%  21h 43m             
+    3.1 Pro (High)         ━━━━━━━━━━ 100.0%  21h 43m             │     3.1 Pro (High)         ━━━━━━━━━━ 100.0%  21h 43m             
+    3.5 Flash (Medium)     ━━━━━━━━━━ 100.0%  21h 43m             │     3.5 Flash (Medium)     ━━━━━━━━━━ 100.0%  21h 43m             
+    3.6 Flash (High)       ━━━━━━━━━━ 100.0%  21h 43m             │     3.6 Flash (High)       ━━━━━━━━━━ 100.0%  21h 43m             
+                                                                  │                                                                   
+  ○ OpenAI                                                        │   ○ OpenAI                                                        
+    OSS 120B (Medium)      ━━━━━━━━━━ 100.0%   4h 59m             │     OSS 120B (Medium)      ━━━━━━━━━━ 100.0%   4h 59m             
+                                                                  │                                                                   
+  ◌ Other                                                         │   ◌ Other                                                         
+    Placeholder M196       ━━━━━━━━━━ 100.0%  21h 43m             │     Placeholder M196       ━━━━━━━━━━ 100.0%  21h 43m             
 ```
 
 ---
@@ -179,27 +200,27 @@ Profile 'work' is not authenticated yet. Run: mgy new work
 
 Both `mgy` and `multigravity` can be used interchangeably:
 
-| Command | Description |
-| :--- | :--- |
-| `mgy <profile> --conversation=<id>` | Resumes a specific conversation by ID (same as `agy --conversation=<id>`). |
-| `mgy <profile> -c`, `--continue` | Continues the most recent conversation. |
-| `mgy conversations` | Lists recent conversation IDs, titles, and activity timestamps. |
-| `mgy new <profile>` | Creates a profile directory and executes the initial OAuth authentication flow. |
-| `mgy import [profile]` | Links or imports the host's existing `~/.gemini/antigravity-cli` global configuration into the named profile (default: `perso`). |
-| `mgy list` | Lists all available configured profiles. |
-| `mgy quotas` | Iterates across all profiles and outputs active model quotas. |
-| `mgy delete <profile>` | Prompts for confirmation and deletes the profile directory. |
-| `mgy <profile> [args...]` | Starts `agy` with the chosen profile, forwarding any arguments. |
-| `mgy help`, `--help`, `-h` | Displays the help and usage menu. |
+| Command                             | Description                                                                                                                      |
+| :---------------------------------- | :------------------------------------------------------------------------------------------------------------------------------- |
+| `mgy <profile> --conversation=<id>` | Resumes a specific conversation by ID (same as `agy --conversation=<id>`).                                                       |
+| `mgy <profile> -c`, `--continue`    | Continues the most recent conversation.                                                                                          |
+| `mgy conversations`                 | Lists recent conversation IDs, titles, and activity timestamps.                                                                  |
+| `mgy new <profile>`                 | Creates a profile directory and executes the initial OAuth authentication flow.                                                  |
+| `mgy import [profile]`              | Links or imports the host's existing `~/.gemini/antigravity-cli` global configuration into the named profile (default: `perso`). |
+| `mgy list`                          | Lists all available configured profiles.                                                                                         |
+| `mgy quotas`                        | Iterates across all profiles and outputs active model quotas.                                                                    |
+| `mgy delete <profile>`              | Prompts for confirmation and deletes the profile directory.                                                                      |
+| `mgy <profile> [args...]`           | Starts `agy` with the chosen profile, forwarding any arguments.                                                                  |
+| `mgy help`, `--help`, `-h`          | Displays the help and usage menu.                                                                                                |
 
 ---
 
 ## ⚙️ Configuration & Environment Variables
 
-| Variable | Default | Purpose |
-| :--- | :--- | :--- |
-| `MULTIGRAVITY_PROFILES_DIR` | `~/.config/multigravity-profiles` | Base directory where all isolated profile workspaces are stored. |
-| `REAL_HOME` | `$HOME` | Host home directory used for resolving global `.gitconfig` and `.ssh` links. |
+| Variable                    | Default                           | Purpose                                                                      |
+| :-------------------------- | :-------------------------------- | :--------------------------------------------------------------------------- |
+| `MULTIGRAVITY_PROFILES_DIR` | `~/.config/multigravity-profiles` | Base directory where all isolated profile workspaces are stored.             |
+| `REAL_HOME`                 | `$HOME`                           | Host home directory used for resolving global `.gitconfig` and `.ssh` links. |
 
 You can override the profiles storage directory by exporting `MULTIGRAVITY_PROFILES_DIR`:
 ```bash

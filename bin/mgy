@@ -164,7 +164,24 @@ case "$1" in
         fi
         ;;
 
-    quotas)
+    quotas|quota)
+        shift
+        if [ -z "$COLUMNS" ]; then
+            _cols=$(tput cols 2>/dev/null || stty size 2>/dev/null | awk '{print $2}' || true)
+            if [ -n "$_cols" ] && [ "$_cols" -gt 0 ] 2>/dev/null; then
+                export COLUMNS="$_cols"
+            fi
+        fi
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        if [ -x "$SCRIPT_DIR/mgy-quota" ]; then
+            "$SCRIPT_DIR/mgy-quota" "$@"
+            exit $?
+        elif command -v mgy-quota >/dev/null 2>&1; then
+            mgy-quota "$@"
+            exit $?
+        fi
+
+        # Fallback to agy -p "/quota" if mgy-quota is not available
         found=0
         if [ -d "$PROFILES_DIR" ]; then
             for profile in "$PROFILES_DIR"/*; do

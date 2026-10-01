@@ -3,7 +3,7 @@ set -e
 
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
-for bin in mgy multigravity; do
+for bin in mgy multigravity mgy-quota; do
     if [ -f "$INSTALL_DIR/$bin" ] || [ -L "$INSTALL_DIR/$bin" ]; then
         rm -f "$INSTALL_DIR/$bin"
         echo "Removed $INSTALL_DIR/$bin."
