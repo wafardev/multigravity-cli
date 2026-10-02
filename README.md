@@ -1,8 +1,8 @@
 # mgy (multigravity-cli)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-brightgreen.svg)]()
-[![Shell](https://img.shields.io/badge/Shell-bash%20%7C%20zsh-orange.svg)]()
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-brightgreen.svg)]()
+[![Shell](https://img.shields.io/badge/Shell-bash%20%7C%20zsh%20%7C%20powershell-orange.svg)]()
 
 > Lightweight multi-account profile, session, and quota manager for the **Google Antigravity CLI (`agy`)**.
 
@@ -14,7 +14,7 @@ It isolates Google OAuth credentials and quotas per profile, while keeping your 
 
 ## 🎯 Why mgy?
 
-By default, the Antigravity CLI (`agy`) binds your credentials and your conversation history together in a single global directory: `~/.gemini/antigravity-cli`.
+By default, the Antigravity CLI (`agy`) binds your credentials and your conversation history together in a single global directory: `~/.gemini/antigravity-cli` (`%USERPROFILE%\.gemini\antigravity-cli` on Windows).
 
 This creates several challenges for power users:
 - **Quota Exhaustion**: When your five-hour or weekly quota on one account runs low, you cannot switch accounts without losing active session context or overwriting tokens.
@@ -32,28 +32,29 @@ This creates several challenges for power users:
 
 **All profiles share your global conversations, history, settings, and MCP tools**, while each profile maintains its **own independent Google OAuth token and quota**.
 
-When launching a session with `mgy <profile>`, the environment redirects `HOME` to `~/.config/multigravity-profiles/<profile>/`:
+When launching a session with `mgy <profile>`, the environment redirects `HOME` (and `%USERPROFILE%` on Windows) to `~/.config/multigravity-profiles/<profile>/`:
 
 ```
-~/.config/multigravity-profiles/
+~/.config/multigravity-profiles/  (or %USERPROFILE%\.config\multigravity-profiles\)
 ├── <profile-1>/
 │   ├── .gemini/
-│   │   └── antigravity-cli/         # Symlink -> host ~/.gemini/antigravity-cli (SHARED)
-│   ├── .gitconfig                   # Symlink -> host ~/.gitconfig
-│   ├── .ssh                         # Symlink -> host ~/.ssh
-│   └── Library/Keychains/           # Isolated Keychain (Profile 1 OAuth token)
+│   │   └── antigravity-cli/         # Symlink / Junction -> host antigravity-cli (SHARED)
+│   ├── .gitconfig                   # Symlink / HardLink -> host .gitconfig
+│   ├── .ssh                         # Symlink / Junction -> host .ssh
+│   └── .tokens/ (or Keychains)      # Isolated credentials (Profile 1 OAuth token)
 └── <profile-2>/
     ├── .gemini/
-    │   └── antigravity-cli/         # Symlink -> host ~/.gemini/antigravity-cli (SHARED)
-    ├── .gitconfig                   # Symlink -> host ~/.gitconfig
-    ├── .ssh                         # Symlink -> host ~/.ssh
-    └── Library/Keychains/           # Isolated Keychain (Profile 2 OAuth token)
+    │   └── antigravity-cli/         # Symlink / Junction -> host antigravity-cli (SHARED)
+    ├── .gitconfig                   # Symlink / HardLink -> host .gitconfig
+    ├── .ssh                         # Symlink / Junction -> host .ssh
+    └── .tokens/ (or Keychains)      # Isolated credentials (Profile 2 OAuth token)
 ```
 
 > [!NOTE]
 > - **Unified History & Memory**: Because `.gemini/antigravity-cli` is shared across all profiles, all your conversations, chat summaries, CLI settings, prompt history (`history.jsonl`), and MCP servers are always preserved. You can resume any conversation across different accounts seamlessly (`mgy <profile> -c`).
 > - **Isolated Credentials & Quota**: Each profile maintains its own isolated OAuth token. When you switch profiles, you draw from that specific account's quota limits without affecting others or losing any context.
-> - **Preserved Identity**: Host `.gitconfig` and `.ssh` are symlinked across all profiles, ensuring git commits always retain your author name and email.
+> - **Preserved Identity**: Host `.gitconfig` and `.ssh` are linked across all profiles, ensuring git commits always retain your author name and email.
+> - **Windows Native**: On Windows, NTFS Directory Junctions are utilized instead of symlinks, requiring **no Administrator privileges** or Developer Mode. Both `%USERPROFILE%` and `$HOME` are dynamically isolated.
 
 ---
 
@@ -61,34 +62,28 @@ When launching a session with `mgy <profile>`, the environment redirects `HOME` 
 
 ### 1. Installation
 
-#### Option A: Clone & Install (Recommended)
+#### macOS / Linux
 ```bash
 git clone https://github.com/your-username/multigravity-cli.git
 cd multigravity-cli
 ./install.sh
 ```
 
-#### Option B: Standalone One-Liner
-```bash
-mkdir -p ~/.local/bin ~/.config/multigravity-profiles
-curl -fsSL https://raw.githubusercontent.com/your-username/multigravity-cli/master/bin/mgy -o ~/.local/bin/mgy
-chmod +x ~/.local/bin/mgy
-ln -sf mgy ~/.local/bin/multigravity
+#### Windows (PowerShell / Windows Terminal)
+```powershell
+git clone https://github.com/your-username/multigravity-cli.git
+cd multigravity-cli
+.\install.ps1
 ```
+*(Or run `npm run install-windows`). This installs `mgy.cmd`, `mgy.ps1`, `multigravity.cmd`, and `mgy-quota.cmd` into your `%USERPROFILE%\.local\bin` and ensures it is in your User `PATH`.*
 
-#### Option C: Via NPM
+#### Via NPM
 ```bash
 cd multigravity-cli
 npm link
 ```
 
-Ensure `~/.local/bin` is in your `$PATH`:
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-*(Add the above line to your `~/.zshrc` or `~/.bashrc` to make it permanent).*
-
-Both `mgy` and `multigravity` commands are available in your shell!
+Both `mgy` and `multigravity` commands are immediately available in your terminal!
 
 ---
 

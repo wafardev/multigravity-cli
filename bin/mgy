@@ -84,6 +84,10 @@ is_profile_authenticated() {
     if [[ "$OSTYPE" == "darwin"* ]]; then
         HOME="$target" security find-generic-password -s gemini -a antigravity >/dev/null 2>&1
         return $?
+    elif [ -f "$target/.tokens/credential.txt" ]; then
+        return 0
+    elif [ -f "$target/antigravity-oauth-token" ] || [ -f "$target/.gemini/antigravity-cli/antigravity-oauth-token" ]; then
+        return 0
     else
         [ -d "$target/.gemini/antigravity-cli" ] && [ -f "$target/.gemini/antigravity-cli/settings.json" ]
         return $?
@@ -113,10 +117,10 @@ case "$1" in
         echo "Setting up profile '$PROFILE_NAME'..."
         # agy authenticates automatically on startup when unauthenticated.
         # -p "/quota" triggers OAuth login in the browser/terminal and displays quotas once authenticated.
-        if HOME="$TARGET_DIR" agy auth login 2>/dev/null; then
+        if USERPROFILE="$TARGET_DIR" HOME="$TARGET_DIR" agy auth login 2>/dev/null; then
             :
         else
-            HOME="$TARGET_DIR" agy -p "/quota" || HOME="$TARGET_DIR" agy || true
+            USERPROFILE="$TARGET_DIR" HOME="$TARGET_DIR" agy -p "/quota" || USERPROFILE="$TARGET_DIR" HOME="$TARGET_DIR" agy || true
         fi
         echo "Profile '$PROFILE_NAME' is ready!"
         ;;
@@ -273,7 +277,7 @@ case "$1" in
         TARGET_DIR="$PROFILES_DIR/$SELECTED_PROFILE"
         setup_profile_environment "$TARGET_DIR"
         echo "Starting agy with profile '$SELECTED_PROFILE'..."
-        HOME="$TARGET_DIR" exec agy "$@"
+        USERPROFILE="$TARGET_DIR" HOME="$TARGET_DIR" exec agy "$@"
         ;;
 
     *)
@@ -284,6 +288,6 @@ case "$1" in
         fi
         setup_profile_environment "$TARGET_DIR"
         echo "Starting agy with profile '$1'..."
-        HOME="$TARGET_DIR" exec agy "${@:2}"
+        USERPROFILE="$TARGET_DIR" HOME="$TARGET_DIR" exec agy "${@:2}"
         ;;
 esac
