@@ -63,6 +63,16 @@ public class WinCredManager {
     public static extern void CredFree([In] IntPtr buffer);
 
     public static string ReadCredential(string target) {
+        string res = ReadSingleCredential(target);
+        if (res == null && target.Contains(":")) {
+            res = ReadSingleCredential(target.Replace(':', '/'));
+        } else if (res == null && target.Contains("/")) {
+            res = ReadSingleCredential(target.Replace('/', ':'));
+        }
+        return res;
+    }
+
+    private static string ReadSingleCredential(string target) {
         IntPtr credPtr;
         if (CredRead(target, 1, 0, out credPtr)) {
             try {
@@ -98,7 +108,13 @@ public class WinCredManager {
     }
 
     public static bool DeleteCredential(string target) {
-        return CredDelete(target, 1, 0);
+        bool d1 = CredDelete(target, 1, 0);
+        if (target.Contains(":")) {
+            CredDelete(target.Replace(':', '/'), 1, 0);
+        } else if (target.Contains("/")) {
+            CredDelete(target.Replace('/', ':'), 1, 0);
+        }
+        return d1;
     }
 }
 "@
@@ -151,7 +167,26 @@ function Setup-ProfileEnvironment([string]$TargetDir) {
     }
 
     # Create NTFS Junction (shared conversations, history, MCP tools)
-    if (-not (Test-Path $targetAgyDir)) {
+    $needsJunction = $true
+    if (Test-Path $targetAgyDir) {
+        try {
+            $item = Get-Item -LiteralPath $targetAgyDir -Force
+            if ($item.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)) {
+                $needsJunction = $false
+            } else {
+                $children = Get-ChildItem -LiteralPath $targetAgyDir -Force -ErrorAction SilentlyContinue
+                if (-not $children -or $children.Count -eq 0) {
+                    Remove-Item -LiteralPath $targetAgyDir -Force -Recurse -ErrorAction SilentlyContinue
+                } else {
+                    $needsJunction = $false
+                }
+            }
+        } catch {
+            $needsJunction = $false
+        }
+    }
+
+    if ($needsJunction -and -not (Test-Path $targetAgyDir)) {
         try {
             New-Item -ItemType Junction -Path $targetAgyDir -Target $sourceAgyDir -ErrorAction Stop | Out-Null
         } catch {
@@ -199,9 +234,9 @@ function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs) {
     if ($hasWinCred) {
         if (Test-Path $tokenFile) {
             $tokenData = [System.IO.File]::ReadAllText($tokenFile, [System.Text.Encoding]::UTF8)
-            [WinCredManager]::WriteCredential("gemini/antigravity", $tokenData) | Out-Null
+            [WinCredManager]::WriteCredential("gemini:antigravity", $tokenData) | Out-Null
         } else {
-            [WinCredManager]::DeleteCredential("gemini/antigravity") | Out-Null
+            [WinCredManager]::DeleteCredential("gemini:antigravity") | Out-Null
         }
     }
 
@@ -215,7 +250,7 @@ function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs) {
     } finally {
         # Save updated credential back to profile
         if ($hasWinCred) {
-            $savedCred = [WinCredManager]::ReadCredential("gemini/antigravity")
+            $savedCred = [WinCredManager]::ReadCredential("gemini:antigravity")
             if ($savedCred) {
                 if (-not (Test-Path $tokensDir)) { New-Item -ItemType Directory -Path $tokensDir -Force | Out-Null }
                 [System.IO.File]::WriteAllText($tokenFile, $savedCred, [System.Text.Encoding]::UTF8)
@@ -257,14 +292,14 @@ switch -Wildcard ($Command) {
 
         $tokensDir = Join-Path $targetDir ".tokens"
         New-Item -ItemType Directory -Path $tokensDir -Force | Out-Null
-        New-Item -ItemType Directory -Path (Join-Path $targetDir ".gemini\antigravity-cli") -Force | Out-Null
         Setup-ProfileEnvironment -TargetDir $targetDir
 
         Write-Host "Setting up profile '$profileName'..." -ForegroundColor Cyan
 
         $hasWinCred = ([System.Management.Automation.PSTypeName]'WinCredManager').Type -ne $null
+        $prevCred = if ($hasWinCred) { [WinCredManager]::ReadCredential("gemini:antigravity") } else { $null }
         if ($hasWinCred) {
-            [WinCredManager]::DeleteCredential("gemini/antigravity") | Out-Null
+            [WinCredManager]::DeleteCredential("gemini:antigravity") | Out-Null
         }
 
         $prevUserProfile = $env:USERPROFILE
@@ -272,23 +307,31 @@ switch -Wildcard ($Command) {
         try {
             $env:USERPROFILE = $targetDir
             $env:HOME = $targetDir
-            try {
-                & agy auth login
-            } catch {
-                & agy -p "/quota"
+            # agy authenticates automatically on startup when unauthenticated.
+            # -p "/quota" triggers OAuth login in the browser/terminal and displays quotas once authenticated.
+            & agy -p "/quota"
+            if ($LASTEXITCODE -ne 0) {
+                & agy
             }
         } finally {
             if ($hasWinCred) {
-                $savedCred = [WinCredManager]::ReadCredential("gemini/antigravity")
+                $savedCred = [WinCredManager]::ReadCredential("gemini:antigravity")
                 if ($savedCred) {
                     $tokenFile = Join-Path $tokensDir "credential.txt"
                     [System.IO.File]::WriteAllText($tokenFile, $savedCred, [System.Text.Encoding]::UTF8)
+                    Write-Host "Profile '$profileName' is ready!" -ForegroundColor Green
+                } else {
+                    Write-Host "Warning: No credentials were saved for profile '$profileName'." -ForegroundColor Yellow
+                    if ($prevCred) {
+                        [WinCredManager]::WriteCredential("gemini:antigravity", $prevCred) | Out-Null
+                    }
                 }
+            } else {
+                Write-Host "Profile '$profileName' is ready!" -ForegroundColor Green
             }
             $env:USERPROFILE = $prevUserProfile
             $env:HOME = $prevHome
         }
-        Write-Host "Profile '$profileName' is ready!" -ForegroundColor Green
     }
 
     "import" {
@@ -319,7 +362,7 @@ switch -Wildcard ($Command) {
 
         $hasWinCred = ([System.Management.Automation.PSTypeName]'WinCredManager').Type -ne $null
         if ($hasWinCred) {
-            $hostCred = [WinCredManager]::ReadCredential("gemini/antigravity")
+            $hostCred = [WinCredManager]::ReadCredential("gemini:antigravity")
             if ($hostCred) {
                 $tokenFile = Join-Path $tokensDir "credential.txt"
                 [System.IO.File]::WriteAllText($tokenFile, $hostCred, [System.Text.Encoding]::UTF8)

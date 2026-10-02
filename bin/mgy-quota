@@ -18,10 +18,17 @@ import urllib.parse
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Enable ANSI escape sequences on Windows console host
+# Enable ANSI escape sequences and UTF-8 encoding on Windows console host
 if sys.platform == "win32":
     try:
         os.system("")
+    except Exception:
+        pass
+    try:
+        if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
+        if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
@@ -140,10 +147,12 @@ def get_profiles_dir():
         return custom
     return os.path.join(get_real_home(), ".config", "multigravity-profiles")
 
-def read_wincred(target_name="gemini/antigravity"):
+def read_wincred(target_names=("gemini:antigravity", "gemini/antigravity")):
     """Reads generic credentials from Windows Credential Manager using standard library ctypes."""
     if sys.platform != "win32":
         return None
+    if isinstance(target_names, str):
+        target_names = [target_names]
     try:
         import ctypes
         from ctypes import wintypes
@@ -172,15 +181,16 @@ def read_wincred(target_name="gemini/antigravity"):
         CredFree = advapi32.CredFree
         CredFree.argtypes = [ctypes.c_void_p]
 
-        p_cred = ctypes.POINTER(CREDENTIAL)()
         CRED_TYPE_GENERIC = 1
-        if CredRead(target_name, CRED_TYPE_GENERIC, 0, ctypes.byref(p_cred)):
-            try:
-                blob_size = p_cred.contents.CredentialBlobSize
-                blob = ctypes.string_at(p_cred.contents.CredentialBlob, blob_size)
-                return blob.decode("utf-8", errors="ignore")
-            finally:
-                CredFree(p_cred)
+        for target_name in target_names:
+            p_cred = ctypes.POINTER(CREDENTIAL)()
+            if CredRead(target_name, CRED_TYPE_GENERIC, 0, ctypes.byref(p_cred)):
+                try:
+                    blob_size = p_cred.contents.CredentialBlobSize
+                    blob = ctypes.string_at(p_cred.contents.CredentialBlob, blob_size)
+                    return blob.decode("utf-8", errors="ignore")
+                finally:
+                    CredFree(p_cred)
     except Exception:
         pass
     return None
@@ -219,7 +229,7 @@ def get_profile_raw_credential(name, profile_path):
             except Exception:
                 pass
     elif sys.platform == "win32":
-        raw = read_wincred("gemini/antigravity")
+        raw = read_wincred()
         if raw:
             return raw
 

@@ -117,11 +117,7 @@ case "$1" in
         echo "Setting up profile '$PROFILE_NAME'..."
         # agy authenticates automatically on startup when unauthenticated.
         # -p "/quota" triggers OAuth login in the browser/terminal and displays quotas once authenticated.
-        if USERPROFILE="$TARGET_DIR" HOME="$TARGET_DIR" agy auth login 2>/dev/null; then
-            :
-        else
-            USERPROFILE="$TARGET_DIR" HOME="$TARGET_DIR" agy -p "/quota" || USERPROFILE="$TARGET_DIR" HOME="$TARGET_DIR" agy || true
-        fi
+        USERPROFILE="$TARGET_DIR" HOME="$TARGET_DIR" agy -p "/quota" || USERPROFILE="$TARGET_DIR" HOME="$TARGET_DIR" agy || true
         echo "Profile '$PROFILE_NAME' is ready!"
         ;;
 
