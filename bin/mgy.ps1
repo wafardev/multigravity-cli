@@ -253,7 +253,8 @@ function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs) {
             $savedCred = [WinCredManager]::ReadCredential("gemini:antigravity")
             if ($savedCred) {
                 if (-not (Test-Path $tokensDir)) { New-Item -ItemType Directory -Path $tokensDir -Force | Out-Null }
-                [System.IO.File]::WriteAllText($tokenFile, $savedCred, [System.Text.Encoding]::UTF8)
+                $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+                [System.IO.File]::WriteAllText($tokenFile, $savedCred, $utf8NoBom)
             }
         }
         $env:USERPROFILE = $prevUserProfile
@@ -318,7 +319,8 @@ switch -Wildcard ($Command) {
                 $savedCred = [WinCredManager]::ReadCredential("gemini:antigravity")
                 if ($savedCred) {
                     $tokenFile = Join-Path $tokensDir "credential.txt"
-                    [System.IO.File]::WriteAllText($tokenFile, $savedCred, [System.Text.Encoding]::UTF8)
+                    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+                    [System.IO.File]::WriteAllText($tokenFile, $savedCred, $utf8NoBom)
                     Write-Host "Profile '$profileName' is ready!" -ForegroundColor Green
                 } else {
                     Write-Host "Warning: No credentials were saved for profile '$profileName'." -ForegroundColor Yellow
@@ -365,7 +367,8 @@ switch -Wildcard ($Command) {
             $hostCred = [WinCredManager]::ReadCredential("gemini:antigravity")
             if ($hostCred) {
                 $tokenFile = Join-Path $tokensDir "credential.txt"
-                [System.IO.File]::WriteAllText($tokenFile, $hostCred, [System.Text.Encoding]::UTF8)
+                $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+                [System.IO.File]::WriteAllText($tokenFile, $hostCred, $utf8NoBom)
             }
         }
 
@@ -375,7 +378,27 @@ switch -Wildcard ($Command) {
     { $_ -in @("quotas", "quota", "quotes", "quote") } {
         $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
         $quotaScript = Join-Path $scriptDir "mgy-quota"
+        if (-not (Test-Path $quotaScript)) {
+            $quotaScript = Join-Path $scriptDir "mgy-quota.py"
+        }
+        if (-not (Test-Path $quotaScript)) {
+            $quotaCmd = Get-Command "mgy-quota" -ErrorAction SilentlyContinue
+            if ($quotaCmd) { $quotaScript = $quotaCmd.Source }
+        }
+        if (-not (Test-Path $quotaScript)) {
+            $quotaCmd = Get-Command "mgy-quota.py" -ErrorAction SilentlyContinue
+            if ($quotaCmd) { $quotaScript = $quotaCmd.Source }
+        }
+
         if (Test-Path $quotaScript) {
+            if (-not $env:COLUMNS) {
+                try {
+                    $cols = $Host.UI.RawUI.WindowSize.Width
+                    if ($cols -and $cols -gt 0) {
+                        $env:COLUMNS = "$cols"
+                    }
+                } catch {}
+            }
             python $quotaScript @RemainingArgs
             exit $LASTEXITCODE
         } else {

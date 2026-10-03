@@ -28,6 +28,7 @@ Copy-Item -Path (Join-Path $ScriptDir "bin\mgy.ps1") -Destination (Join-Path $In
 
 $quotaSource = Join-Path $ScriptDir "bin\mgy-quota"
 if (Test-Path $quotaSource) {
+    Copy-Item -Path $quotaSource -Destination (Join-Path $InstallDir "mgy-quota") -Force
     Copy-Item -Path $quotaSource -Destination (Join-Path $InstallDir "mgy-quota.py") -Force
     @"
 @echo off

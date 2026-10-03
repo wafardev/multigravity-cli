@@ -25,6 +25,12 @@ if sys.platform == "win32":
     except Exception:
         pass
     try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass
+    try:
         if sys.stdout and hasattr(sys.stdout, "reconfigure"):
             sys.stdout.reconfigure(encoding="utf-8")
         if sys.stderr and hasattr(sys.stderr, "reconfigure"):
@@ -60,6 +66,7 @@ def find_agy_binary():
         os.path.join(home, ".local", "bin", "agy.exe" if sys.platform == "win32" else "agy"),
         os.path.join(home, "bin", "agy.exe" if sys.platform == "win32" else "agy"),
         os.path.join(home, "AppData", "Local", "Programs", "antigravity", "agy.exe"),
+        os.path.join(home, "AppData", "Local", "agy", "bin", "agy.exe"),
     ]
     for cp in common_paths:
         if os.path.exists(cp):
@@ -188,7 +195,7 @@ def read_wincred(target_names=("gemini:antigravity", "gemini/antigravity")):
                 try:
                     blob_size = p_cred.contents.CredentialBlobSize
                     blob = ctypes.string_at(p_cred.contents.CredentialBlob, blob_size)
-                    return blob.decode("utf-8", errors="ignore")
+                    return blob.decode("utf-8-sig", errors="ignore")
                 finally:
                     CredFree(p_cred)
     except Exception:
@@ -207,7 +214,7 @@ def get_profile_raw_credential(name, profile_path):
     for path in token_candidates:
         if os.path.exists(path):
             try:
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, "r", encoding="utf-8-sig") as f:
                     content = f.read().strip()
                 if content:
                     return content
@@ -302,8 +309,9 @@ def fetch_single_profile(name, profile_path):
         return result
 
     try:
+        raw = raw.strip().lstrip("\ufeff")
         if raw.startswith("go-keyring-base64:"):
-            payload = json.loads(base64.b64decode(raw.split(":", 1)[1]))
+            payload = json.loads(base64.b64decode(raw.split(":", 1)[1]).decode("utf-8-sig", errors="ignore"))
         else:
             payload = json.loads(raw)
         tok = payload.get("token", {}) if isinstance(payload, dict) and "token" in payload else payload
@@ -545,7 +553,25 @@ def get_terminal_width():
             except (AttributeError, ValueError, OSError):
                 pass
 
-    # 3. /dev/tty ioctl
+    # 3. Windows CONOUT$ console handle
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            import struct
+            handle = ctypes.windll.kernel32.CreateFileW("CONOUT$", 0x80000000 | 0x40000000, 1 | 2, None, 3, 0, None)
+            if handle != -1 and handle != 0:
+                csbi = ctypes.create_string_buffer(22)
+                if ctypes.windll.kernel32.GetConsoleScreenBufferInfo(handle, csbi):
+                    (bufx, bufy, curx, cury, wattr, left, top, right, bottom, maxx, maxy) = struct.unpack("hhhhHhhhhhh", csbi.raw)
+                    width = right - left + 1
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    if width > 0:
+                        return width
+                ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+
+    # 4. /dev/tty ioctl
     try:
         with open("/dev/tty", "r") as f:
             val = os.get_terminal_size(f.fileno()).columns
@@ -554,7 +580,7 @@ def get_terminal_width():
     except Exception:
         pass
 
-    # 4. tput cols
+    # 5. tput cols
     try:
         output = subprocess.check_output(["tput", "cols"], stderr=subprocess.DEVNULL).decode().strip()
         val = int(output)
@@ -563,7 +589,7 @@ def get_terminal_width():
     except Exception:
         pass
 
-    # 5. Fallback
+    # 6. Fallback
     return shutil.get_terminal_size(fallback=(80, 24)).columns
 
 def render_side_by_side(all_columns, term_width, col_width=56, forced_cols=None):
