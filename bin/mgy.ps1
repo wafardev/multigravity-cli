@@ -15,6 +15,8 @@ param(
 # Resolve Home and Profiles Directory
 $RealHome = if ($env:REAL_HOME) { 
     $env:REAL_HOME 
+} elseif ($env:USERPROFILE -and $env:USERPROFILE -like "*\.config\multigravity-profiles*") {
+    $env:USERPROFILE.Substring(0, $env:USERPROFILE.IndexOf("\.config\multigravity-profiles"))
 } elseif ($env:USERPROFILE) { 
     $env:USERPROFILE 
 } else { 
@@ -135,6 +137,7 @@ Commands:
   list                   List all existing profiles
   quotas, quota, quotes  Check model quota usage across all profiles
   conversations          List recent conversations and their IDs
+  fork --conversation=<id> Fork an existing conversation across all other profiles
   delete <profile>       Delete an existing profile
   help, --help, -h       Show this help message
   <profile> [agy args]   Start agy session using the specified profile
@@ -146,6 +149,7 @@ Resume & Conversation Flags (same as agy):
 Examples:
   mgy new work                 # Set up a new profile with Google login
   mgy list                     # List all registered profiles
+  mgy fork --conversation=<id> # Fork conversation across all profiles
   mgy work                     # Start interactive agy session with profile
   mgy work -c                  # Continue latest chat under profile
   mgy work --conversation=<id> # Resume specific conversation by ID
@@ -274,6 +278,124 @@ switch -Wildcard ($Command) {
             Get-ChildItem -Path $ProfilesDir -Directory | ForEach-Object { Write-Host "  • $($_.Name)" }
         } else {
             Write-Host "  (no profiles found)" -ForegroundColor DarkGray
+        }
+    }
+
+    "fork" {
+        $convId = $null
+        for ($i = 0; $i -lt $RemainingArgs.Count; $i++) {
+            if ($RemainingArgs[$i] -match "^--conversation=(.+)$") {
+                $convId = $matches[1]
+                break
+            } elseif ($RemainingArgs[$i] -eq "--conversation" -and ($i + 1) -lt $RemainingArgs.Count) {
+                $convId = $RemainingArgs[$i + 1]
+                break
+            } elseif (-not $convId -and $RemainingArgs[$i] -notmatch "^-") {
+                $convId = $RemainingArgs[$i]
+            }
+        }
+
+        if (-not $convId) {
+            Write-Error "Error: Missing conversation ID to fork. Usage: mgy fork --conversation=<id>"
+            exit 1
+        }
+
+        $sourceAgyDir = Join-Path $RealHome ".gemini\antigravity-cli"
+        $srcDb = Join-Path $sourceAgyDir "conversations\$convId.db"
+        $srcBrain = Join-Path $sourceAgyDir "brain\$convId"
+
+        if (-not (Test-Path $srcDb) -and -not (Test-Path $srcBrain)) {
+            Write-Error "Error: Conversation '$convId' not found at $sourceAgyDir"
+            exit 1
+        }
+
+        if (-not (Test-Path $ProfilesDir)) {
+            Write-Error "Error: Profiles directory not found at $ProfilesDir"
+            exit 1
+        }
+
+        $profiles = @(Get-ChildItem -Path $ProfilesDir -Directory -ErrorAction SilentlyContinue | Sort-Object Name)
+        if ($profiles.Count -eq 0) {
+            Write-Error "Error: No profiles found in $ProfilesDir. Create profiles first with: mgy new <profile_name>"
+            exit 1
+        }
+
+        $firstProfile = $profiles[0].Name
+        $otherProfiles = if ($profiles.Count -gt 1) { $profiles[1..($profiles.Count - 1)] } else { @() }
+
+        Write-Host "Forking conversation '$convId' across $($profiles.Count) profiles..." -ForegroundColor Cyan
+
+        $results = @()
+        # First profile retains original conversation
+        $results += "mgy $firstProfile --conversation $convId"
+
+        # Subsequent profiles each get a new forked conversation
+        foreach ($p in $otherProfiles) {
+            $pName = $p.Name
+            $newId = [guid]::NewGuid().ToString()
+
+            # 1. Copy SQLite database files (.db, .db-wal, .db-shm)
+            $dstDb = Join-Path $sourceAgyDir "conversations\$newId.db"
+            $srcWal = Join-Path $sourceAgyDir "conversations\$convId.db-wal"
+            $dstWal = Join-Path $sourceAgyDir "conversations\$newId.db-wal"
+            $srcShm = Join-Path $sourceAgyDir "conversations\$convId.db-shm"
+            $dstShm = Join-Path $sourceAgyDir "conversations\$newId.db-shm"
+
+            if (Test-Path $srcDb) {
+                Copy-Item -Path $srcDb -Destination $dstDb -Force
+                if (Test-Path $srcWal) { Copy-Item -Path $srcWal -Destination $dstWal -Force }
+                if (Test-Path $srcShm) { Copy-Item -Path $srcShm -Destination $dstShm -Force }
+
+                # Rebind trajectory identity in SQLite to prevent "trajectory not found" / duplicate-load collisions
+                try {
+                    $pythonCmd = Get-Command "python" -ErrorAction SilentlyContinue
+                    if ($pythonCmd) {
+                        $pyScript = @"
+import sqlite3, uuid
+c = sqlite3.connect(r'$dstDb')
+new_traj = str(uuid.uuid4())
+c.execute("UPDATE trajectory_meta SET cascade_id = ?, trajectory_id = ?", ('$newId', new_traj))
+rows = c.execute("SELECT id, data FROM trajectory_metadata_blob").fetchall()
+for b_id, b_data in rows:
+    if b_data and '$convId'.encode('utf-8') in b_data:
+        patched = b_data.replace('$convId'.encode('utf-8'), '$newId'.encode('utf-8'))
+        c.execute("UPDATE trajectory_metadata_blob SET data = ? WHERE id = ?", (patched, b_id))
+c.commit()
+c.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+c.close()
+"@
+                        & python -c $pyScript 2>$null
+                    }
+                } catch {}
+            }
+
+            # 2. Copy brain directory using robocopy for high-speed multi-file cloning
+            $dstBrain = Join-Path $sourceAgyDir "brain\$newId"
+            if (Test-Path $srcBrain) {
+                if (Test-Path $dstBrain) { Remove-Item -Path $dstBrain -Recurse -Force }
+                New-Item -ItemType Directory -Path $dstBrain -Force | Out-Null
+                robocopy "$srcBrain" "$dstBrain" /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
+            }
+
+            # 3. Copy annotations if present
+            $srcAnno = Join-Path $sourceAgyDir "annotations\$convId.pbtxt"
+            $dstAnno = Join-Path $sourceAgyDir "annotations\$newId.pbtxt"
+            if (Test-Path $srcAnno) {
+                Copy-Item -Path $srcAnno -Destination $dstAnno -Force
+            }
+
+            # 4. Remove presence lock if exists
+            $dstLock = Join-Path $sourceAgyDir "presence\$newId.lock"
+            if (Test-Path $dstLock) {
+                Remove-Item -Path $dstLock -Force -ErrorAction SilentlyContinue
+            }
+
+            $results += "mgy $pName --conversation $newId"
+        }
+
+        Write-Host ""
+        foreach ($r in $results) {
+            Write-Host $r
         }
     }
 

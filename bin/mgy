@@ -23,6 +23,7 @@ Commands:
   list                   List all existing profiles
   quotas, quota, quotes Check model quota usage across all profiles
   conversations          List recent conversations and their IDs
+  fork --conversation=<id> Fork an existing conversation across all other profiles
   delete <profile>       Delete an existing profile
   help, --help, -h       Show this help message
   <profile> [agy args]   Start agy session using the specified profile
@@ -34,6 +35,7 @@ Resume & Conversation Flags (same as agy):
 Examples:
   $CMD_NAME new <profile>                 # Set up a new profile with Google login
   $CMD_NAME list                          # List all registered profiles
+  $CMD_NAME fork --conversation=<id>      # Fork conversation across all profiles
   $CMD_NAME <profile>                     # Start interactive agy session with profile
   $CMD_NAME <profile> -c                  # Continue latest chat under profile
   $CMD_NAME <profile> --conversation=<id> # Resume specific conversation by ID
@@ -162,6 +164,98 @@ case "$1" in
         else
             echo "(no profiles found)"
         fi
+        ;;
+
+    fork)
+        shift
+        CONV_ID=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --conversation=*)
+                    CONV_ID="${1#*=}"
+                    shift
+                    ;;
+                --conversation)
+                    CONV_ID="$2"
+                    shift 2
+                    ;;
+                *)
+                    [ -z "$CONV_ID" ] && CONV_ID="$1"
+                    shift
+                    ;;
+            esac
+        done
+
+        if [ -z "$CONV_ID" ]; then
+            echo "Error: Missing conversation ID to fork. Usage: $CMD_NAME fork --conversation=<id>"
+            exit 1
+        fi
+
+        SOURCE_AGY_DIR="$REAL_HOME/.gemini/antigravity-cli"
+        SRC_DB="$SOURCE_AGY_DIR/conversations/$CONV_ID.db"
+        SRC_BRAIN="$SOURCE_AGY_DIR/brain/$CONV_ID"
+
+        if [ ! -f "$SRC_DB" ] && [ ! -d "$SRC_BRAIN" ]; then
+            echo "Error: Conversation '$CONV_ID' not found at $SOURCE_AGY_DIR"
+            exit 1
+        fi
+
+        mapfile -t PROFILES < <(ls -1 "$PROFILES_DIR" 2>/dev/null | sort || true)
+        if [ "${#PROFILES[@]}" -eq 0 ]; then
+            echo "Error: No profiles found in $PROFILES_DIR. Create profiles first with: $CMD_NAME new <profile_name>"
+            exit 1
+        fi
+
+        FIRST_PROFILE="${PROFILES[0]}"
+        echo "Forking conversation '$CONV_ID' across ${#PROFILES[@]} profiles..."
+        echo ""
+        echo "$CMD_NAME $FIRST_PROFILE --conversation $CONV_ID"
+
+        for ((i=1; i<${#PROFILES[@]}; i++)); do
+            P_NAME="${PROFILES[i]}"
+            if command -v uuidgen >/dev/null 2>&1; then
+                NEW_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+            elif [ -f /proc/sys/kernel/random/uuid ]; then
+                NEW_ID=$(cat /proc/sys/kernel/random/uuid)
+            else
+                NEW_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+            fi
+
+            # 1. Copy SQLite database files
+            DST_DB="$SOURCE_AGY_DIR/conversations/$NEW_ID.db"
+            [ -f "$SRC_DB" ] && cp -f "$SRC_DB" "$DST_DB"
+            [ -f "$SOURCE_AGY_DIR/conversations/$CONV_ID.db-wal" ] && cp -f "$SOURCE_AGY_DIR/conversations/$CONV_ID.db-wal" "$SOURCE_AGY_DIR/conversations/$NEW_ID.db-wal"
+            [ -f "$SOURCE_AGY_DIR/conversations/$CONV_ID.db-shm" ] && cp -f "$SOURCE_AGY_DIR/conversations/$CONV_ID.db-shm" "$SOURCE_AGY_DIR/conversations/$NEW_ID.db-shm"
+
+            if command -v python3 >/dev/null 2>&1; then
+                python3 -c "
+import sqlite3, uuid
+c = sqlite3.connect('$DST_DB')
+new_traj = str(uuid.uuid4())
+c.execute(\"UPDATE trajectory_meta SET cascade_id = ?, trajectory_id = ?\", ('$NEW_ID', new_traj))
+rows = c.execute(\"SELECT id, data FROM trajectory_metadata_blob\").fetchall()
+for b_id, b_data in rows:
+    if b_data and '$CONV_ID'.encode('utf-8') in b_data:
+        patched = b_data.replace('$CONV_ID'.encode('utf-8'), '$NEW_ID'.encode('utf-8'))
+        c.execute(\"UPDATE trajectory_metadata_blob SET data = ? WHERE id = ?\", (patched, b_id))
+c.commit()
+c.execute(\"PRAGMA wal_checkpoint(TRUNCATE);\")
+c.close()
+" 2>/dev/null || true
+            fi
+
+            # 2. Copy brain directory
+            DST_BRAIN="$SOURCE_AGY_DIR/brain/$NEW_ID"
+            [ -d "$SRC_BRAIN" ] && cp -rf "$SRC_BRAIN" "$DST_BRAIN"
+
+            # 3. Copy annotations if present
+            [ -f "$SOURCE_AGY_DIR/annotations/$CONV_ID.pbtxt" ] && cp -f "$SOURCE_AGY_DIR/annotations/$CONV_ID.pbtxt" "$SOURCE_AGY_DIR/annotations/$NEW_ID.pbtxt"
+
+            # 4. Remove presence lock if exists
+            rm -f "$SOURCE_AGY_DIR/presence/$NEW_ID.lock"
+
+            echo "$CMD_NAME $P_NAME --conversation $NEW_ID"
+        done
         ;;
 
     quotas|quota|quotes|quote)
