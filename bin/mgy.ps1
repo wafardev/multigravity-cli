@@ -3,14 +3,9 @@
 mgy (multigravity) - Profile manager for Antigravity CLI (agy) on Windows
 Manages isolated credentials, sessions, and configurations per profile.
 #>
-[CmdletBinding()]
-param(
-    [Parameter(Position=0)]
-    [string]$Command,
+$Command = if ($args.Count -gt 0) { [string]$args[0] } else { $null }
+[string[]]$RemainingArgs = @($args | Select-Object -Skip 1)
 
-    [Parameter(Position=1, ValueFromRemainingArguments=$true)]
-    [string[]]$RemainingArgs
-)
 
 # Resolve Home and Profiles Directory
 $RealHome = if ($env:REAL_HOME) { 
