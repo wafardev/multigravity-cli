@@ -4,8 +4,18 @@ param(
     [string]$InstallDir = $env:INSTALL_DIR
 )
 
+$RealHome = if ($env:REAL_HOME) { 
+    $env:REAL_HOME 
+} elseif ($env:USERPROFILE -and $env:USERPROFILE -like "*\.config\multigravity-profiles*") {
+    $env:USERPROFILE.Substring(0, $env:USERPROFILE.IndexOf("\.config\multigravity-profiles"))
+} elseif ($env:USERPROFILE) { 
+    $env:USERPROFILE 
+} else { 
+    $env:HOME 
+}
+
 if (-not $InstallDir) {
-    $InstallDir = Join-Path $env:USERPROFILE ".local\bin"
+    $InstallDir = Join-Path $RealHome ".local\bin"
 }
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -16,7 +26,7 @@ if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
 
-$ProfilesDir = Join-Path $env:USERPROFILE ".config\multigravity-profiles"
+$ProfilesDir = Join-Path $RealHome ".config\multigravity-profiles"
 if (-not (Test-Path $ProfilesDir)) {
     New-Item -ItemType Directory -Path $ProfilesDir -Force | Out-Null
 }

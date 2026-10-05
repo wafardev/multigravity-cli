@@ -348,23 +348,64 @@ switch -Wildcard ($Command) {
 
                 # Rebind trajectory identity in SQLite to prevent "trajectory not found" / duplicate-load collisions
                 try {
-                    $pythonCmd = Get-Command "python" -ErrorAction SilentlyContinue
+                    $pythonCmd = if (Get-Command "python" -ErrorAction SilentlyContinue) { "python" } elseif (Get-Command "python3" -ErrorAction SilentlyContinue) { "python3" } else { $null }
                     if ($pythonCmd) {
+                        $sumDb = Join-Path $sourceAgyDir "conversation_summaries.db"
                         $pyScript = @"
-import sqlite3, uuid
-c = sqlite3.connect(r'$dstDb')
+import sqlite3, uuid, datetime
+
+src_db = r'$srcDb'
+dst_db = r'$dstDb'
+sum_db = r'$sumDb'
+conv_id = '$convId'
+new_id = '$newId'
+
+old_traj = None
+try:
+    c_src = sqlite3.connect(f'file:{src_db}?mode=ro', uri=True)
+    row_meta = c_src.execute('SELECT trajectory_id FROM trajectory_meta').fetchone()
+    if row_meta:
+        old_traj = row_meta[0]
+    c_src.close()
+except Exception:
+    pass
+
+c = sqlite3.connect(dst_db, timeout=10.0)
 new_traj = str(uuid.uuid4())
-c.execute("UPDATE trajectory_meta SET cascade_id = ?, trajectory_id = ?", ('$newId', new_traj))
-rows = c.execute("SELECT id, data FROM trajectory_metadata_blob").fetchall()
+c.execute('UPDATE trajectory_meta SET cascade_id = ?, trajectory_id = ?', (new_id, new_traj))
+rows = c.execute('SELECT id, data FROM trajectory_metadata_blob').fetchall()
 for b_id, b_data in rows:
-    if b_data and '$convId'.encode('utf-8') in b_data:
-        patched = b_data.replace('$convId'.encode('utf-8'), '$newId'.encode('utf-8'))
-        c.execute("UPDATE trajectory_metadata_blob SET data = ? WHERE id = ?", (patched, b_id))
+    if b_data and conv_id.encode('utf-8') in b_data:
+        patched = b_data.replace(conv_id.encode('utf-8'), new_id.encode('utf-8'))
+        c.execute('UPDATE trajectory_metadata_blob SET data = ? WHERE id = ?', (patched, b_id))
 c.commit()
-c.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+c.execute('PRAGMA wal_checkpoint(TRUNCATE);')
 c.close()
+
+try:
+    c_sum = sqlite3.connect(sum_db, timeout=10.0)
+    row = c_sum.execute('SELECT * FROM conversation_summaries WHERE conversation_id = ?', (conv_id,)).fetchone()
+    if row:
+        cols = [d[1] for d in c_sum.execute('PRAGMA table_info(conversation_summaries)').fetchall()]
+        row_dict = dict(zip(cols, row))
+        raw = row_dict.get('raw_summary')
+        if raw:
+            raw = raw.replace(conv_id.encode('utf-8'), new_id.encode('utf-8'))
+            if old_traj:
+                raw = raw.replace(old_traj.encode('utf-8'), new_traj.encode('utf-8'))
+            row_dict['raw_summary'] = raw
+        row_dict['conversation_id'] = new_id
+        row_dict['last_modified_time'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        placeholders = ','.join(['?'] * len(cols))
+        values = [row_dict[k] for k in cols]
+        c_sum.execute(f"INSERT OR REPLACE INTO conversation_summaries ({','.join(cols)}) VALUES ({placeholders})", values)
+        c_sum.commit()
+        c_sum.execute('PRAGMA wal_checkpoint(TRUNCATE);')
+    c_sum.close()
+except Exception:
+    pass
 "@
-                        & python -c $pyScript 2>$null
+                        $pyScript | & $pythonCmd -
                     }
                 } catch {}
             }
