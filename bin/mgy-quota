@@ -228,11 +228,12 @@ def get_profile_raw_credential(name, profile_path):
             kc = os.path.join(get_real_home(), "Library", "Keychains", "login.keychain-db")
         if os.path.exists(kc):
             try:
-                subprocess.run(["security", "unlock-keychain", "-p", "", kc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                cmd = ["security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w", kc]
-                raw = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
-                if raw:
-                    return raw
+                res = subprocess.run(["security", "unlock-keychain", "-p", "", kc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if res.returncode == 0:
+                    cmd = ["security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w", kc]
+                    raw = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
+                    if raw:
+                        return raw
             except Exception:
                 pass
     elif sys.platform == "win32":

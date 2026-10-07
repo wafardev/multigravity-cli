@@ -69,14 +69,20 @@ setup_profile_environment() {
 
     # macOS Keychain isolation support (keeps OAuth tokens isolated per account)
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        mkdir -p "$target/Library/Keychains"
-        # If the profile doesn't have a keychain or symlink, create an isolated keychain for it
-        if [ ! -e "$target/Library/Keychains/login.keychain-db" ]; then
-            security create-keychain -p "" "$target/Library/Keychains/login.keychain-db" 2>/dev/null || true
+        local kc="$target/Library/Keychains/login.keychain-db"
+        if [ ! -L "$target/Library/Keychains" ] && [ ! -L "$kc" ]; then
+            mkdir -p "$target/Library/Keychains"
+            if [ ! -e "$kc" ]; then
+                security create-keychain -p "" "$kc" 2>/dev/null || true
+            fi
+            if [ -f "$kc" ]; then
+                security set-keychain-settings "$kc" 2>/dev/null || true
+                security unlock-keychain -p "" "$kc" 2>/dev/null || true
+            fi
         fi
-        if [ -f "$target/Library/Keychains/login.keychain-db" ]; then
-            security unlock-keychain -p "" "$target/Library/Keychains/login.keychain-db" 2>/dev/null || true
-            security default-keychain -s "$target/Library/Keychains/login.keychain-db" 2>/dev/null || true
+        if [ -f "$kc" ]; then
+            HOME="$target" security default-keychain -s "$kc" 2>/dev/null || true
+            HOME="$target" security list-keychains -d user -s "$kc" 2>/dev/null || true
         fi
     fi
 }
@@ -84,6 +90,11 @@ setup_profile_environment() {
 is_profile_authenticated() {
     local target="$1"
     if [[ "$OSTYPE" == "darwin"* ]]; then
+        local kc="$target/Library/Keychains/login.keychain-db"
+        if [ -f "$kc" ]; then
+            security find-generic-password -s gemini -a antigravity "$kc" >/dev/null 2>&1
+            return $?
+        fi
         HOME="$target" security find-generic-password -s gemini -a antigravity >/dev/null 2>&1
         return $?
     elif [ -f "$target/.tokens/credential.txt" ]; then
