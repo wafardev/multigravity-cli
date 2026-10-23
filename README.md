@@ -191,6 +191,28 @@ mgy quotas -w 30
 
 ---
 
+### 5. Exporting & Importing Conversations Across Machines
+
+`mgy` includes native support for exporting and migrating full conversation states, trajectories, agent memories, and audit artifacts between computers:
+
+```bash
+# Export a conversation by ID to a portable .tar.gz archive:
+mgy export <conv_id> [path/to/archive.tar.gz]
+
+# Example:
+mgy export 71475e79-6329-4adb-a3e1-a71f84fe44b9 my_session.tar.gz
+
+# On another machine, import the conversation:
+mgy import-conversation my_session.tar.gz
+
+# Resume it immediately:
+mgy <profile> --conversation 71475e79-6329-4adb-a3e1-a71f84fe44b9
+# Or with standard agy:
+agy --conversation 71475e79-6329-4adb-a3e1-a71f84fe44b9
+```
+
+---
+
 ## 📖 Command Reference
 
 Both `mgy` and `multigravity` can be used interchangeably:
@@ -200,6 +222,9 @@ Both `mgy` and `multigravity` can be used interchangeably:
 | `mgy <profile> --conversation=<id>` | Resumes a specific conversation by ID (same as `agy --conversation=<id>`).                                                       |
 | `mgy <profile> -c`, `--continue`    | Continues the most recent conversation.                                                                                          |
 | `mgy conversations`                 | Lists recent conversation IDs, titles, and activity timestamps.                                                                  |
+| `mgy export <id> [tar_path]`        | Exports a conversation, session SQLite DB, trajectory, and artifacts to a portable `.tar.gz` archive.                             |
+| `mgy import-conversation <tar_path>`| Imports an exported conversation archive into `~/.gemini/antigravity-cli`, restoring full session state and summary entries.      |
+| `mgy fork --conversation=<id>`      | Forks an active conversation across all other profiles with fresh IDs.                                                           |
 | `mgy new <profile>`                 | Creates a profile directory and executes the initial OAuth authentication flow.                                                  |
 | `mgy import [profile]`              | Links or imports the host's existing `~/.gemini/antigravity-cli` global configuration into the named profile (default: `perso`). |
 | `mgy list`                          | Lists all available configured profiles.                                                                                         |

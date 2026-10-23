@@ -24,6 +24,8 @@ Commands:
   quotas, quota, quotes Check model quota usage across all profiles
   conversations          List recent conversations and their IDs
   fork --conversation=<id> Fork an existing conversation across all other profiles
+  export <conv_id> [tar] Export a conversation into a portable tar.gz archive
+  import-conversation <tar> Import an exported conversation archive
   delete <profile>       Delete an existing profile
   help, --help, -h       Show this help message
   <profile> [agy args]   Start agy session using the specified profile
@@ -36,6 +38,8 @@ Examples:
   $CMD_NAME new <profile>                 # Set up a new profile with Google login
   $CMD_NAME list                          # List all registered profiles
   $CMD_NAME fork --conversation=<id>      # Fork conversation across all profiles
+  $CMD_NAME export <id> [path.tar.gz]     # Export conversation to a portable archive
+  $CMD_NAME import-conversation <archive> # Import conversation archive into agy
   $CMD_NAME <profile>                     # Start interactive agy session with profile
   $CMD_NAME <profile> -c                  # Continue latest chat under profile
   $CMD_NAME <profile> --conversation=<id> # Resume specific conversation by ID
@@ -107,6 +111,232 @@ is_profile_authenticated() {
     fi
 }
 
+export_conversation_handler() {
+    local conv_id=""
+    local output_tar=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --help|-h)
+                echo "Usage: $CMD_NAME export <conversation_id> [tar_gz_path]"
+                echo "Exports an Antigravity conversation and its artifacts to a portable tar.gz archive."
+                exit 0
+                ;;
+            --conversation=*)
+                conv_id="${1#*=}"
+                shift
+                ;;
+            --conversation)
+                conv_id="$2"
+                shift 2
+                ;;
+            *)
+                if [ -z "$conv_id" ]; then
+                    conv_id="$1"
+                elif [ -z "$output_tar" ]; then
+                    output_tar="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [ -z "$conv_id" ]; then
+        echo "Error: Missing conversation ID to export."
+        echo "Usage: $CMD_NAME export <conversation_id> [tar_gz_path]"
+        exit 1
+    fi
+
+    local source_dir="$REAL_HOME/.gemini/antigravity-cli"
+    local src_db="$source_dir/conversations/$conv_id.db"
+    local src_brain="$source_dir/brain/$conv_id"
+    local src_anno="$source_dir/annotations/$conv_id.pbtxt"
+
+    if [ ! -f "$src_db" ] && [ ! -d "$src_brain" ]; then
+        echo "Error: Conversation '$conv_id' not found at $source_dir"
+        exit 1
+    fi
+
+    if [ -z "$output_tar" ]; then
+        output_tar="conversation_${conv_id}.tar.gz"
+    fi
+
+    local orig_pwd="$(pwd)"
+    local abs_output_tar=""
+    if [[ "$output_tar" != /* ]]; then
+        abs_output_tar="$orig_pwd/$output_tar"
+    else
+        abs_output_tar="$output_tar"
+    fi
+
+    if [ -d "$abs_output_tar" ]; then
+        abs_output_tar="$abs_output_tar/conversation_${conv_id}.tar.gz"
+    fi
+
+    mkdir -p "$(dirname "$abs_output_tar")"
+
+    # Flush SQLite WAL to ensure main .db contains full state
+    if command -v sqlite3 >/dev/null 2>&1 && [ -f "$src_db" ]; then
+        sqlite3 "$src_db" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1 || true
+    fi
+
+    # Export conversation summary metadata if python is available
+    local python_bin=""
+    if command -v python3 >/dev/null 2>&1; then
+        python_bin="python3"
+    elif command -v python >/dev/null 2>&1; then
+        python_bin="python"
+    fi
+
+    if [ -n "$python_bin" ] && [ -d "$src_brain" ]; then
+        "$python_bin" - <<EOF 2>/dev/null || true
+import sqlite3, json, os
+
+conv_id = '$conv_id'
+sum_db = os.path.expanduser('$source_dir/conversation_summaries.db')
+brain_dir = os.path.expanduser('$src_brain')
+
+if os.path.exists(sum_db) and os.path.isdir(brain_dir):
+    try:
+        conn = sqlite3.connect(sum_db, timeout=5.0)
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM conversation_summaries WHERE conversation_id = ?", (conv_id,))
+        row = cur.fetchone()
+        if row:
+            cols = [col[0] for col in cur.description]
+            data = {}
+            for c, v in zip(cols, row):
+                if isinstance(v, bytes):
+                    data[c] = {"__bytes__": v.hex()}
+                else:
+                    data[c] = v
+            with open(os.path.join(brain_dir, '.conversation_summary.json'), 'w') as f:
+                json.dump(data, f)
+        conn.close()
+    except Exception:
+        pass
+EOF
+    fi
+
+    # Build relative file list for clean extraction
+    local items=()
+    [ -f "$source_dir/conversations/$conv_id.db" ] && items+=("conversations/$conv_id.db")
+    [ -f "$source_dir/conversations/$conv_id.db-wal" ] && items+=("conversations/$conv_id.db-wal")
+    [ -f "$source_dir/conversations/$conv_id.db-shm" ] && items+=("conversations/$conv_id.db-shm")
+    [ -f "$src_anno" ] && items+=("annotations/$conv_id.pbtxt")
+    [ -d "$src_brain" ] && items+=("brain/$conv_id")
+
+    echo "Exporting conversation '$conv_id'..."
+    if tar -czf "$abs_output_tar" -C "$source_dir" "${items[@]}"; then
+        local size=$(du -h "$abs_output_tar" 2>/dev/null | awk '{print $1}')
+        echo "==> Successfully exported conversation archive ($size)"
+        echo "Archive: $abs_output_tar"
+        echo ""
+        echo "To import and resume on another machine:"
+        echo "  $CMD_NAME import-conversation $abs_output_tar"
+        echo "Or manually:"
+        echo "  mkdir -p ~/.gemini/antigravity-cli"
+        echo "  tar -xzf $abs_output_tar -C ~/.gemini/antigravity-cli/"
+        echo "  agy --conversation $conv_id"
+    else
+        echo "Error: Failed to create tar archive."
+        exit 1
+    fi
+}
+
+import_conversation_handler() {
+    if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+        echo "Usage: $CMD_NAME import-conversation <path_to_tar_gz>"
+        echo "Imports an exported Antigravity conversation archive into ~/.gemini/antigravity-cli."
+        exit 0
+    fi
+    local archive_path="$1"
+    if [ -z "$archive_path" ]; then
+        echo "Error: Missing archive path."
+        echo "Usage: $CMD_NAME import-conversation <path_to_tar_gz>"
+        exit 1
+    fi
+
+    local orig_pwd="$(pwd)"
+    local abs_archive=""
+    if [[ "$archive_path" != /* ]]; then
+        abs_archive="$orig_pwd/$archive_path"
+    else
+        abs_archive="$archive_path"
+    fi
+
+    if [ ! -f "$abs_archive" ]; then
+        echo "Error: Archive file not found: $abs_archive"
+        exit 1
+    fi
+
+    local target_dir="$REAL_HOME/.gemini/antigravity-cli"
+    mkdir -p "$target_dir"
+    mkdir -p "$target_dir/conversations"
+    mkdir -p "$target_dir/brain"
+    mkdir -p "$target_dir/annotations"
+
+    echo "Importing conversation archive: $abs_archive..."
+    if tar -xzf "$abs_archive" -C "$target_dir"; then
+        echo "==> Successfully extracted conversation files to $target_dir"
+
+        # Detect imported conversation ID
+        local imported_id=$(tar -tf "$abs_archive" 2>/dev/null | grep -E '^conversations/[a-zA-Z0-9-]+\.db$' | head -n 1 | sed -E 's|conversations/(.+)\.db|\1|')
+
+        # Restore summary row if present
+        local python_bin=""
+        if command -v python3 >/dev/null 2>&1; then
+            python_bin="python3"
+        elif command -v python >/dev/null 2>&1; then
+            python_bin="python"
+        fi
+
+        if [ -n "$python_bin" ] && [ -n "$imported_id" ]; then
+            "$python_bin" - <<EOF 2>/dev/null || true
+import sqlite3, json, os
+
+conv_id = '$imported_id'
+sum_db = os.path.expanduser('$target_dir/conversation_summaries.db')
+meta_file = os.path.expanduser(f'$target_dir/brain/{conv_id}/.conversation_summary.json')
+
+if os.path.exists(sum_db) and os.path.exists(meta_file):
+    try:
+        with open(meta_file, 'r') as f:
+            data = json.load(f)
+        conn = sqlite3.connect(sum_db, timeout=5.0)
+        cur = conn.cursor()
+        cols = []
+        vals = []
+        for k, v in data.items():
+            cols.append(k)
+            if isinstance(v, dict) and "__bytes__" in v:
+                vals.append(bytes.fromhex(v["__bytes__"]))
+            else:
+                vals.append(v)
+        placeholders = ",".join(["?"] * len(cols))
+        sql = f"INSERT OR REPLACE INTO conversation_summaries ({','.join(cols)}) VALUES ({placeholders})"
+        cur.execute(sql, vals)
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        conn.close()
+    except Exception:
+        pass
+EOF
+        fi
+
+        if [ -n "$imported_id" ]; then
+            echo "Imported conversation ID: $imported_id"
+            echo ""
+            echo "You can resume it using:"
+            echo "  $CMD_NAME <profile> --conversation $imported_id"
+            echo "  agy --conversation $imported_id"
+        fi
+    else
+        echo "Error: Failed to extract archive."
+        exit 1
+    fi
+}
+
 case "$1" in
     new)
         shift
@@ -136,6 +366,10 @@ case "$1" in
 
     import)
         shift
+        if [ -n "$1" ] && [ -f "$1" ] && { [[ "$1" == *.tar.gz ]] || [[ "$1" == *.tgz ]]; }; then
+            import_conversation_handler "$@"
+            exit $?
+        fi
         PROFILE_NAME="$1"
         [ -z "$PROFILE_NAME" ] && usage
         TARGET_DIR="$PROFILES_DIR/$PROFILE_NAME"
@@ -315,6 +549,16 @@ EOF
 
             echo "$CMD_NAME $P_NAME --conversation $NEW_ID"
         done
+        ;;
+
+    export|export-conversation|export-conv)
+        shift
+        export_conversation_handler "$@"
+        ;;
+
+    import-conversation|import-conv)
+        shift
+        import_conversation_handler "$@"
         ;;
 
     quotas|quota|quotes|quote)

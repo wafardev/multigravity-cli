@@ -133,6 +133,8 @@ Commands:
   quotas, quota, quotes  Check model quota usage across all profiles
   conversations          List recent conversations and their IDs
   fork --conversation=<id> Fork an existing conversation across all other profiles
+  export <conv_id> [tar] Export a conversation into a portable tar.gz archive
+  import-conversation <tar> Import an exported conversation archive
   delete <profile>       Delete an existing profile
   help, --help, -h       Show this help message
   <profile> [agy args]   Start agy session using the specified profile
@@ -145,6 +147,8 @@ Examples:
   mgy new work                 # Set up a new profile with Google login
   mgy list                     # List all registered profiles
   mgy fork --conversation=<id> # Fork conversation across all profiles
+  mgy export <id> [path.tar.gz] # Export conversation to a portable archive
+  mgy import-conversation <archive> # Import conversation archive into agy
   mgy work                     # Start interactive agy session with profile
   mgy work -c                  # Continue latest chat under profile
   mgy work --conversation=<id> # Resume specific conversation by ID
@@ -432,6 +436,244 @@ except Exception:
         Write-Host ""
         foreach ($r in $results) {
             Write-Host $r
+        }
+    }
+
+    { $_ -in "export", "export-conversation", "export-conv" } {
+        $convId = $null
+        $outputTar = $null
+
+        for ($i = 0; $i -lt $RemainingArgs.Count; $i++) {
+            if ($RemainingArgs[$i] -match "^--conversation=(.+)$") {
+                $convId = $matches[1]
+            } elseif ($RemainingArgs[$i] -eq "--conversation" -and ($i + 1) -lt $RemainingArgs.Count) {
+                $convId = $RemainingArgs[$i + 1]
+                $i++
+            } elseif (-not $convId -and $RemainingArgs[$i] -notmatch "^-") {
+                $convId = $RemainingArgs[$i]
+            } elseif (-not $outputTar -and $RemainingArgs[$i] -notmatch "^-") {
+                $outputTar = $RemainingArgs[$i]
+            }
+        }
+
+        if (-not $convId) {
+            Write-Error "Error: Missing conversation ID to export. Usage: mgy export <conversation_id> [tar_gz_path]"
+            exit 1
+        }
+
+        $sourceAgyDir = Join-Path $RealHome ".gemini\antigravity-cli"
+        $srcDb = Join-Path $sourceAgyDir "conversations\$convId.db"
+        $srcBrain = Join-Path $sourceAgyDir "brain\$convId"
+        $srcAnno = Join-Path $sourceAgyDir "annotations\$convId.pbtxt"
+
+        if (-not (Test-Path $srcDb) -and -not (Test-Path $srcBrain)) {
+            Write-Error "Error: Conversation '$convId' not found at $sourceAgyDir"
+            exit 1
+        }
+
+        if (-not $outputTar) {
+            $outputTar = "conversation_${convId}.tar.gz"
+        }
+
+        if (-not [System.IO.Path]::IsPathRooted($outputTar)) {
+            $absOutputTar = Join-Path (Get-Location).Path $outputTar
+        } else {
+            $absOutputTar = $outputTar
+        }
+
+        if (Test-Path $absOutputTar -PathType Container) {
+            $absOutputTar = Join-Path $absOutputTar "conversation_${convId}.tar.gz"
+        }
+
+        $outParent = Split-Path -Parent $absOutputTar
+        if ($outParent -and -not (Test-Path $outParent)) {
+            New-Item -ItemType Directory -Path $outParent -Force | Out-Null
+        }
+
+        $pythonCmd = $null
+        if (Get-Command "python3" -ErrorAction SilentlyContinue) {
+            $pythonCmd = "python3"
+        } elseif (Get-Command "python" -ErrorAction SilentlyContinue) {
+            $pythonCmd = "python"
+        }
+
+        if ($pythonCmd) {
+            $pyScript = @"
+import sqlite3, json, os, tarfile
+
+conv_id = '$convId'
+source_dir = r'$sourceAgyDir'
+abs_tar = r'$absOutputTar'
+src_db = os.path.join(source_dir, 'conversations', f'{conv_id}.db')
+brain_dir = os.path.join(source_dir, 'brain', conv_id)
+sum_db = os.path.join(source_dir, 'conversation_summaries.db')
+
+if os.path.exists(src_db):
+    try:
+        con = sqlite3.connect(src_db)
+        con.execute('PRAGMA wal_checkpoint(TRUNCATE);')
+        con.close()
+    except Exception:
+        pass
+
+if os.path.exists(sum_db) and os.path.isdir(brain_dir):
+    try:
+        conn = sqlite3.connect(sum_db, timeout=5.0)
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM conversation_summaries WHERE conversation_id = ?", (conv_id,))
+        row = cur.fetchone()
+        if row:
+            cols = [col[0] for col in cur.description]
+            data = {}
+            for c, v in zip(cols, row):
+                if isinstance(v, bytes):
+                    data[c] = {"__bytes__": v.hex()}
+                else:
+                    data[c] = v
+            with open(os.path.join(brain_dir, '.conversation_summary.json'), 'w') as f:
+                json.dump(data, f)
+        conn.close()
+    except Exception:
+        pass
+
+items = [
+    (os.path.join(source_dir, 'conversations', f'{conv_id}.db'), f'conversations/{conv_id}.db'),
+    (os.path.join(source_dir, 'conversations', f'{conv_id}.db-wal'), f'conversations/{conv_id}.db-wal'),
+    (os.path.join(source_dir, 'conversations', f'{conv_id}.db-shm'), f'conversations/{conv_id}.db-shm'),
+    (os.path.join(source_dir, 'annotations', f'{conv_id}.pbtxt'), f'annotations/{conv_id}.pbtxt'),
+    (os.path.join(source_dir, 'brain', conv_id), f'brain/{conv_id}'),
+]
+
+with tarfile.open(abs_tar, 'w:gz') as tar:
+    for src, arc in items:
+        if os.path.exists(src):
+            tar.add(src, arcname=arc)
+"@
+            Write-Host "Exporting conversation '$convId' to $absOutputTar..." -ForegroundColor Cyan
+            $pyScript | & $pythonCmd -
+        } elseif (Get-Command "tar" -ErrorAction SilentlyContinue) {
+            Write-Host "Exporting conversation '$convId' to $absOutputTar..." -ForegroundColor Cyan
+            $items = @()
+            if (Test-Path "$sourceAgyDir\conversations\$convId.db") { $items += "conversations/$convId.db" }
+            if (Test-Path "$sourceAgyDir\conversations\$convId.db-wal") { $items += "conversations/$convId.db-wal" }
+            if (Test-Path "$sourceAgyDir\conversations\$convId.db-shm") { $items += "conversations/$convId.db-shm" }
+            if (Test-Path "$sourceAgyDir\annotations\$convId.pbtxt") { $items += "annotations/$convId.pbtxt" }
+            if (Test-Path "$sourceAgyDir\brain\$convId") { $items += "brain/$convId" }
+            tar.exe -czf "$absOutputTar" -C "$sourceAgyDir" $items
+        } else {
+            Write-Error "Error: Neither Python nor tar.exe found to create tar.gz archive."
+            exit 1
+        }
+
+        if (Test-Path $absOutputTar) {
+            $size = (Get-Item $absOutputTar).Length / 1MB
+            Write-Host ("==> Successfully exported conversation archive ({0:N1} MB)" -f $size) -ForegroundColor Green
+            Write-Host "Archive: $absOutputTar"
+            Write-Host ""
+            Write-Host "To import and resume on another machine:"
+            Write-Host "  mgy import-conversation `"$absOutputTar`""
+            Write-Host "Or manually:"
+            Write-Host "  tar -xzf `"$absOutputTar`" -C `"`$HOME\.gemini\antigravity-cli`""
+            Write-Host "  agy --conversation $convId"
+        } else {
+            Write-Error "Error: Failed to create tar archive."
+            exit 1
+        }
+    }
+
+    { $_ -in "import-conversation", "import-conv" } {
+        $archivePath = $RemainingArgs[0]
+        if (-not $archivePath) {
+            Write-Error "Error: Missing archive path. Usage: mgy import-conversation <path_to_tar_gz>"
+            exit 1
+        }
+
+        if (-not [System.IO.Path]::IsPathRooted($archivePath)) {
+            $absArchive = Join-Path (Get-Location).Path $archivePath
+        } else {
+            $absArchive = $archivePath
+        }
+
+        if (-not (Test-Path $absArchive)) {
+            Write-Error "Error: Archive file not found: $absArchive"
+            exit 1
+        }
+
+        $targetDir = Join-Path $RealHome ".gemini\antigravity-cli"
+        New-Item -ItemType Directory -Path (Join-Path $targetDir "conversations") -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $targetDir "brain") -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $targetDir "annotations") -Force | Out-Null
+
+        Write-Host "Importing conversation archive: $absArchive..." -ForegroundColor Cyan
+
+        $pythonCmd = $null
+        if (Get-Command "python3" -ErrorAction SilentlyContinue) {
+            $pythonCmd = "python3"
+        } elseif (Get-Command "python" -ErrorAction SilentlyContinue) {
+            $pythonCmd = "python"
+        }
+
+        if ($pythonCmd) {
+            $pyScript = @"
+import sqlite3, json, os, tarfile, re
+
+target_dir = r'$targetDir'
+abs_tar = r'$absArchive'
+
+with tarfile.open(abs_tar, 'r:*') as tar:
+    tar.extractall(target_dir)
+
+imported_id = None
+with tarfile.open(abs_tar, 'r:*') as tar:
+    for m in tar.getmembers():
+        mat = re.match(r'^conversations/([a-zA-Z0-9-]+)\.db$', m.name)
+        if mat:
+            imported_id = mat.group(1)
+            break
+
+if imported_id:
+    sum_db = os.path.join(target_dir, 'conversation_summaries.db')
+    meta_file = os.path.join(target_dir, 'brain', imported_id, '.conversation_summary.json')
+    if os.path.exists(sum_db) and os.path.exists(meta_file):
+        try:
+            with open(meta_file, 'r') as f:
+                data = json.load(f)
+            conn = sqlite3.connect(sum_db, timeout=5.0)
+            cur = conn.cursor()
+            cols = []
+            vals = []
+            for k, v in data.items():
+                cols.append(k)
+                if isinstance(v, dict) and "__bytes__" in v:
+                    vals.append(bytes.fromhex(v["__bytes__"]))
+                else:
+                    vals.append(v)
+            placeholders = ",".join(["?"] * len(cols))
+            sql = f"INSERT OR REPLACE INTO conversation_summaries ({','.join(cols)}) VALUES ({placeholders})"
+            cur.execute(sql, vals)
+            conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            conn.close()
+        except Exception:
+            pass
+    print(imported_id)
+"@
+            $importedId = ($pyScript | & $pythonCmd - | Out-String).Trim()
+        } elseif (Get-Command "tar" -ErrorAction SilentlyContinue) {
+            tar.exe -xzf "$absArchive" -C "$targetDir"
+            $importedId = (tar.exe -tf "$absArchive" | Select-String -Pattern '^conversations/([a-zA-Z0-9-]+)\.db$' | ForEach-Object { $_.Matches.Groups[1].Value } | Select-Object -First 1)
+        } else {
+            Write-Error "Error: Neither Python nor tar.exe found to extract tar.gz archive."
+            exit 1
+        }
+
+        Write-Host "==> Successfully extracted conversation files to $targetDir" -ForegroundColor Green
+        if ($importedId) {
+            Write-Host "Imported conversation ID: $importedId" -ForegroundColor Cyan
+            Write-Host ""
+            Write-Host "You can resume it using:"
+            Write-Host "  mgy <profile> --conversation $importedId"
+            Write-Host "  agy --conversation $importedId"
         }
     }
 
