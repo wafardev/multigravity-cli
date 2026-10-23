@@ -128,13 +128,13 @@ Usage: mgy [command] [options]
 
 Commands:
   new <profile>          Create a new isolated profile and authenticate
-  import <profile>       Import host ~/.gemini session into a profile
+  import <profile|tar.gz> Import host session into profile OR import conversation archive
   list                   List all existing profiles
   quotas, quota, quotes  Check model quota usage across all profiles
   conversations          List recent conversations and their IDs
   fork --conversation=<id> Fork an existing conversation across all other profiles
   export <conv_id> [tar] Export a conversation into a portable tar.gz archive
-  import-conversation <tar> Import an exported conversation archive
+  import-conversation <tar> Alias for import conversation archive
   delete <profile>       Delete an existing profile
   help, --help, -h       Show this help message
   <profile> [agy args]   Start agy session using the specified profile
@@ -148,7 +148,8 @@ Examples:
   mgy list                     # List all registered profiles
   mgy fork --conversation=<id> # Fork conversation across all profiles
   mgy export <id> [path.tar.gz] # Export conversation to a portable archive
-  mgy import-conversation <archive> # Import conversation archive into agy
+  mgy import <path.tar.gz>      # Import conversation archive into agy
+  mgy import-conversation <archive> # (Alias) Import conversation archive
   mgy work                     # Start interactive agy session with profile
   mgy work -c                  # Continue latest chat under profile
   mgy work --conversation=<id> # Resume specific conversation by ID
@@ -220,6 +221,111 @@ function Setup-ProfileEnvironment([string]$TargetDir) {
     }
 }
 
+function Import-ConversationArchive([string]$ArchivePath) {
+    if (-not $ArchivePath) {
+        Write-Error "Error: Missing archive path. Usage: mgy import <path_to_tar_gz>"
+        exit 1
+    }
+
+    if (-not [System.IO.Path]::IsPathRooted($ArchivePath)) {
+        $absArchive = Join-Path (Get-Location).Path $ArchivePath
+    } else {
+        $absArchive = $ArchivePath
+    }
+
+    if (-not (Test-Path $absArchive)) {
+        Write-Error "Error: Archive file not found: $absArchive"
+        exit 1
+    }
+
+    $targetDir = Join-Path $RealHome ".gemini\antigravity-cli"
+    New-Item -ItemType Directory -Path (Join-Path $targetDir "conversations") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $targetDir "brain") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $targetDir "annotations") -Force | Out-Null
+
+    Write-Host "Importing conversation archive: $absArchive..." -ForegroundColor Cyan
+
+    $pythonCmd = $null
+    if (Get-Command "python3" -ErrorAction SilentlyContinue) {
+        $pythonCmd = "python3"
+    } elseif (Get-Command "python" -ErrorAction SilentlyContinue) {
+        $pythonCmd = "python"
+    }
+
+    if ($pythonCmd) {
+        $pyScript = @"
+import sqlite3, json, os, tarfile, zipfile, re
+
+target_dir = r'$targetDir'
+abs_tar = r'$absArchive'
+
+imported_id = None
+try:
+    if zipfile.is_zipfile(abs_tar):
+        with zipfile.ZipFile(abs_tar, 'r') as zf:
+            zf.extractall(target_dir)
+            for name in zf.namelist():
+                mat = re.search(r'(?:database/|conversations/)?([a-zA-Z0-9-]{36})\.db$', name)
+                if mat:
+                    imported_id = mat.group(1)
+                    break
+    else:
+        with tarfile.open(abs_tar, 'r:*') as tar:
+            tar.extractall(target_dir)
+            for m in tar.getmembers():
+                mat = re.search(r'(?:database/|conversations/)?([a-zA-Z0-9-]{36})\.db$', m.name)
+                if mat:
+                    imported_id = mat.group(1)
+                    break
+except Exception as e:
+    pass
+
+if imported_id:
+    sum_db = os.path.join(target_dir, 'conversation_summaries.db')
+    meta_file = os.path.join(target_dir, 'brain', imported_id, '.conversation_summary.json')
+    if os.path.exists(sum_db) and os.path.exists(meta_file):
+        try:
+            with open(meta_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            conn = sqlite3.connect(sum_db, timeout=5.0)
+            cur = conn.cursor()
+            cols = []
+            vals = []
+            for k, v in data.items():
+                cols.append(k)
+                if isinstance(v, dict) and "__bytes__" in v:
+                    vals.append(bytes.fromhex(v["__bytes__"]))
+                else:
+                    vals.append(v)
+            placeholders = ",".join(["?"] * len(cols))
+            sql = f"INSERT OR REPLACE INTO conversation_summaries ({','.join(cols)}) VALUES ({placeholders})"
+            cur.execute(sql, vals)
+            conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            conn.close()
+        except Exception:
+            pass
+    print(imported_id)
+"@
+        $importedId = ($pyScript | & $pythonCmd - | Out-String).Trim()
+    } elseif (Get-Command "tar" -ErrorAction SilentlyContinue) {
+        tar.exe -xzf "$absArchive" -C "$targetDir"
+        $importedId = (tar.exe -tf "$absArchive" | Select-String -Pattern 'conversations/([a-zA-Z0-9-]+)\.db$' | ForEach-Object { $_.Matches.Groups[1].Value } | Select-Object -First 1)
+    } else {
+        Write-Error "Error: Neither Python nor tar.exe found to extract tar.gz archive."
+        exit 1
+    }
+
+    Write-Host "==> Successfully extracted conversation files to $targetDir" -ForegroundColor Green
+    if ($importedId) {
+        Write-Host "Imported conversation ID: $importedId" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "You can resume it using:"
+        Write-Host "  mgy <profile> --conversation $importedId"
+        Write-Host "  agy --conversation $importedId"
+    }
+}
+
 function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs) {
     $targetDir = Join-Path $ProfilesDir $ProfileName
     if (-not (Test-Path $targetDir)) {
@@ -571,7 +677,7 @@ with tarfile.open(abs_tar, 'w:gz') as tar:
             Write-Host "Archive: $absOutputTar"
             Write-Host ""
             Write-Host "To import and resume on another machine:"
-            Write-Host "  mgy import-conversation `"$absOutputTar`""
+            Write-Host "  mgy import `"$absOutputTar`""
             Write-Host "Or manually:"
             Write-Host "  tar -xzf `"$absOutputTar`" -C `"`$HOME\.gemini\antigravity-cli`""
             Write-Host "  agy --conversation $convId"
@@ -581,103 +687,13 @@ with tarfile.open(abs_tar, 'w:gz') as tar:
         }
     }
 
-    { $_ -in "import-conversation", "import-conv" } {
+        { $_ -in "import-conversation", "import-conv" } {
         $archivePath = $RemainingArgs[0]
-        if (-not $archivePath) {
-            Write-Error "Error: Missing archive path. Usage: mgy import-conversation <path_to_tar_gz>"
-            exit 1
-        }
-
-        if (-not [System.IO.Path]::IsPathRooted($archivePath)) {
-            $absArchive = Join-Path (Get-Location).Path $archivePath
-        } else {
-            $absArchive = $archivePath
-        }
-
-        if (-not (Test-Path $absArchive)) {
-            Write-Error "Error: Archive file not found: $absArchive"
-            exit 1
-        }
-
-        $targetDir = Join-Path $RealHome ".gemini\antigravity-cli"
-        New-Item -ItemType Directory -Path (Join-Path $targetDir "conversations") -Force | Out-Null
-        New-Item -ItemType Directory -Path (Join-Path $targetDir "brain") -Force | Out-Null
-        New-Item -ItemType Directory -Path (Join-Path $targetDir "annotations") -Force | Out-Null
-
-        Write-Host "Importing conversation archive: $absArchive..." -ForegroundColor Cyan
-
-        $pythonCmd = $null
-        if (Get-Command "python3" -ErrorAction SilentlyContinue) {
-            $pythonCmd = "python3"
-        } elseif (Get-Command "python" -ErrorAction SilentlyContinue) {
-            $pythonCmd = "python"
-        }
-
-        if ($pythonCmd) {
-            $pyScript = @"
-import sqlite3, json, os, tarfile, re
-
-target_dir = r'$targetDir'
-abs_tar = r'$absArchive'
-
-with tarfile.open(abs_tar, 'r:*') as tar:
-    tar.extractall(target_dir)
-
-imported_id = None
-with tarfile.open(abs_tar, 'r:*') as tar:
-    for m in tar.getmembers():
-        mat = re.match(r'^conversations/([a-zA-Z0-9-]+)\.db$', m.name)
-        if mat:
-            imported_id = mat.group(1)
-            break
-
-if imported_id:
-    sum_db = os.path.join(target_dir, 'conversation_summaries.db')
-    meta_file = os.path.join(target_dir, 'brain', imported_id, '.conversation_summary.json')
-    if os.path.exists(sum_db) and os.path.exists(meta_file):
-        try:
-            with open(meta_file, 'r') as f:
-                data = json.load(f)
-            conn = sqlite3.connect(sum_db, timeout=5.0)
-            cur = conn.cursor()
-            cols = []
-            vals = []
-            for k, v in data.items():
-                cols.append(k)
-                if isinstance(v, dict) and "__bytes__" in v:
-                    vals.append(bytes.fromhex(v["__bytes__"]))
-                else:
-                    vals.append(v)
-            placeholders = ",".join(["?"] * len(cols))
-            sql = f"INSERT OR REPLACE INTO conversation_summaries ({','.join(cols)}) VALUES ({placeholders})"
-            cur.execute(sql, vals)
-            conn.commit()
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-            conn.close()
-        except Exception:
-            pass
-    print(imported_id)
-"@
-            $importedId = ($pyScript | & $pythonCmd - | Out-String).Trim()
-        } elseif (Get-Command "tar" -ErrorAction SilentlyContinue) {
-            tar.exe -xzf "$absArchive" -C "$targetDir"
-            $importedId = (tar.exe -tf "$absArchive" | Select-String -Pattern '^conversations/([a-zA-Z0-9-]+)\.db$' | ForEach-Object { $_.Matches.Groups[1].Value } | Select-Object -First 1)
-        } else {
-            Write-Error "Error: Neither Python nor tar.exe found to extract tar.gz archive."
-            exit 1
-        }
-
-        Write-Host "==> Successfully extracted conversation files to $targetDir" -ForegroundColor Green
-        if ($importedId) {
-            Write-Host "Imported conversation ID: $importedId" -ForegroundColor Cyan
-            Write-Host ""
-            Write-Host "You can resume it using:"
-            Write-Host "  mgy <profile> --conversation $importedId"
-            Write-Host "  agy --conversation $importedId"
-        }
+        Import-ConversationArchive -ArchivePath $archivePath
+        exit 0
     }
 
-    "new" {
+    "new""new" {
         $profileName = $RemainingArgs[0]
         if (-not $profileName) { Show-Help; exit 1 }
         $targetDir = Join-Path $ProfilesDir $profileName
@@ -737,8 +753,20 @@ if imported_id:
     }
 
     "import" {
-        $profileName = $RemainingArgs[0]
-        if (-not $profileName) { Show-Help; exit 1 }
+        $firstArg = $RemainingArgs[0]
+        if (-not $firstArg) { Show-Help; exit 1 }
+
+        # Check if argument is an archive path (.tar.gz, .tgz, .tar, .zip) or an existing file
+        $isArchivePattern = $firstArg -match '\.(tar\.gz|tgz|tar|zip)$'
+        $isFile = Test-Path $firstArg -PathType Leaf
+
+        if ($isArchivePattern -or $isFile) {
+            Import-ConversationArchive -ArchivePath $firstArg
+            exit 0
+        }
+
+        # Otherwise treat as profile name for host session import
+        $profileName = $firstArg
         $targetDir = Join-Path $ProfilesDir $profileName
         $sourceAgyDir = Join-Path $RealHome ".gemini\antigravity-cli"
 

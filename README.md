@@ -203,7 +203,7 @@ mgy export <conv_id> [path/to/archive.tar.gz]
 mgy export 71475e79-6329-4adb-a3e1-a71f84fe44b9 my_session.tar.gz
 
 # On another machine, import the conversation:
-mgy import-conversation my_session.tar.gz
+mgy import my_session.tar.gz
 
 # Resume it immediately:
 mgy <profile> --conversation 71475e79-6329-4adb-a3e1-a71f84fe44b9
@@ -223,10 +223,11 @@ Both `mgy` and `multigravity` can be used interchangeably:
 | `mgy <profile> -c`, `--continue`    | Continues the most recent conversation.                                                                                          |
 | `mgy conversations`                 | Lists recent conversation IDs, titles, and activity timestamps.                                                                  |
 | `mgy export <id> [tar_path]`        | Exports a conversation, session SQLite DB, trajectory, and artifacts to a portable `.tar.gz` archive.                             |
-| `mgy import-conversation <tar_path>`| Imports an exported conversation archive into `~/.gemini/antigravity-cli`, restoring full session state and summary entries.      |
+| `mgy import <profile|tar_path>`     | Imports a conversation archive (`.tar.gz` / `.zip`) into `~/.gemini/antigravity-cli` OR imports the host session into a profile.   |
+| `mgy import-conversation <tar_path>`| Alias for importing an exported conversation archive.                                                                            |
 | `mgy fork --conversation=<id>`      | Forks an active conversation across all other profiles with fresh IDs.                                                           |
 | `mgy new <profile>`                 | Creates a profile directory and executes the initial OAuth authentication flow.                                                  |
-| `mgy import [profile]`              | Links or imports the host's existing `~/.gemini/antigravity-cli` global configuration into the named profile (default: `perso`). |
+
 | `mgy list`                          | Lists all available configured profiles.                                                                                         |
 | `mgy quotas`                        | Iterates across all profiles and outputs active model quotas.                                                                    |
 | `mgy delete <profile>`              | Prompts for confirmation and deletes the profile directory.                                                                      |
