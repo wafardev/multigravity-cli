@@ -650,7 +650,7 @@ items = [
     (os.path.join(source_dir, 'brain', conv_id), f'brain/{conv_id}'),
 ]
 
-with tarfile.open(abs_tar, 'w:gz') as tar:
+with tarfile.open(abs_tar, 'w:gz', compresslevel=1) as tar:
     for src, arc in items:
         if os.path.exists(src):
             tar.add(src, arcname=arc)
