@@ -326,6 +326,30 @@ if imported_id:
     }
 }
 
+function Get-ProfileTokenAccount([string]$TokenJson) {
+    if (-not $TokenJson) { return $null }
+    try {
+        $obj = $TokenJson | ConvertFrom-Json -ErrorAction SilentlyContinue
+        if ($obj.id_token_email) { return $obj.id_token_email }
+        if ($obj.id_token -and $obj.id_token.Contains(".")) {
+            $parts = $obj.id_token.Split(".")
+            if ($parts.Length -gt 1) {
+                $payload = $parts[1]
+                $mod = $payload.Length % 4
+                if ($mod -gt 0) { $payload += "=" * (4 - $mod) }
+                $bytes = [System.Convert]::FromBase64String($payload.Replace("-", "+").Replace("_", "/"))
+                $claims = [System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json -ErrorAction SilentlyContinue
+                if ($claims.email) { return $claims.email }
+                if ($claims.sub) { return $claims.sub }
+            }
+        }
+        if ($obj.token -and $obj.token.refresh_token) {
+            return $obj.token.refresh_token
+        }
+    } catch {}
+    return $null
+}
+
 function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs) {
     $targetDir = Join-Path $ProfilesDir $ProfileName
     if (-not (Test-Path $targetDir)) {
@@ -338,9 +362,49 @@ function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs) {
     $hasWinCred = ([System.Management.Automation.PSTypeName]'WinCredManager').Type -ne $null
     $tokensDir = Join-Path $targetDir ".tokens"
     $tokenFile = Join-Path $tokensDir "credential.txt"
+    $bootLockFile = Join-Path $ProfilesDir ".wincred_boot.lock"
 
-    # Swap in profile credential before launching agy
+    # Startup synchronization: Ensure only one agy instance reads WinCred at a time
     if ($hasWinCred) {
+        $waitRetries = 0
+        while ($true) {
+            try {
+                $lockStream = [System.IO.File]::Open($bootLockFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                $lockBytes = [System.Text.Encoding]::UTF8.GetBytes("$PID - $ProfileName")
+                $lockStream.Write($lockBytes, 0, $lockBytes.Length)
+                $lockStream.Close()
+                break
+            } catch [System.IO.IOException] {
+                if (Test-Path $bootLockFile) {
+                    $age = (Get-Date) - (Get-Item $bootLockFile).LastWriteTime
+                    if ($age.TotalSeconds -gt 8) {
+                        Remove-Item $bootLockFile -Force -ErrorAction SilentlyContinue
+                        continue
+                    }
+                }
+                Write-Host "[*] Multigravity: Waiting for worker initialization slot ($ProfileName)..." -ForegroundColor DarkGray
+                Start-Sleep -Milliseconds 600
+                $waitRetries++
+                if ($waitRetries -gt 35) {
+                    Remove-Item $bootLockFile -Force -ErrorAction SilentlyContinue
+                    break
+                }
+            } catch {
+                break
+            }
+        }
+
+        # Background cleaner to release boot lock after agy reads the credential into memory (4 seconds)
+        try {
+            $cleaner = [PowerShell]::Create().AddScript({
+                param($path)
+                Start-Sleep -Seconds 4
+                if (Test-Path $path) { Remove-Item $path -Force -ErrorAction SilentlyContinue }
+            }).AddArgument($bootLockFile)
+            $cleaner.BeginInvoke() | Out-Null
+        } catch {}
+
+        # Swap in profile credential before launching agy
         if (Test-Path $tokenFile) {
             $tokenData = [System.IO.File]::ReadAllText($tokenFile, [System.Text.Encoding]::UTF8)
             [WinCredManager]::WriteCredential("gemini:antigravity", $tokenData) | Out-Null
@@ -357,13 +421,39 @@ function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs) {
         Write-Host "Starting agy with profile '$ProfileName'..." -ForegroundColor Cyan
         & agy @AgyArgs
     } finally {
-        # Save updated credential back to profile
+        # Ensure boot lock is cleaned up if session exited early
+        if (Test-Path $bootLockFile) {
+            try {
+                $content = [System.IO.File]::ReadAllText($bootLockFile)
+                if ($content -like "*$PID*") {
+                    Remove-Item $bootLockFile -Force -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        }
+
+        # Save updated credential back to profile ONLY if it belongs to this profile
         if ($hasWinCred) {
             $savedCred = [WinCredManager]::ReadCredential("gemini:antigravity")
             if ($savedCred) {
-                if (-not (Test-Path $tokensDir)) { New-Item -ItemType Directory -Path $tokensDir -Force | Out-Null }
-                $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-                [System.IO.File]::WriteAllText($tokenFile, $savedCred, $utf8NoBom)
+                $savedAccount = Get-ProfileTokenAccount $savedCred
+                $initialAccount = Get-ProfileTokenAccount $tokenData
+
+                $shouldSave = $false
+                if (-not $tokenData -or -not (Test-Path $tokenFile)) {
+                    $shouldSave = $true
+                } elseif ($initialAccount -and $savedAccount -and ($initialAccount -eq $savedAccount)) {
+                    $shouldSave = $true
+                } elseif (-not $initialAccount -and -not $savedAccount) {
+                    $shouldSave = $true
+                } else {
+                    Write-Host "[!] mgy: Skipped saving credential for '$ProfileName' ($initialAccount) because Windows Credential Manager holds a different account ($savedAccount)." -ForegroundColor DarkGray
+                }
+
+                if ($shouldSave) {
+                    if (-not (Test-Path $tokensDir)) { New-Item -ItemType Directory -Path $tokensDir -Force | Out-Null }
+                    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+                    [System.IO.File]::WriteAllText($tokenFile, $savedCred, $utf8NoBom)
+                }
             }
         }
         $env:USERPROFILE = $prevUserProfile
