@@ -2,12 +2,17 @@
 set -e
 
 # multigravity installer
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+if [[ "$HOME" == *"/.config/multigravity-profiles"* ]]; then
+    REAL_HOME="${REAL_HOME:-${HOME%%/.config/multigravity-profiles*}}"
+else
+    REAL_HOME="${REAL_HOME:-$HOME}"
+fi
+INSTALL_DIR="${INSTALL_DIR:-$REAL_HOME/.local/bin}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "==> Installing mgy to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
-mkdir -p "$HOME/.config/multigravity-profiles"
+mkdir -p "$REAL_HOME/.config/multigravity-profiles"
 
 cp "$SCRIPT_DIR/bin/mgy" "$INSTALL_DIR/mgy"
 chmod +x "$INSTALL_DIR/mgy"
