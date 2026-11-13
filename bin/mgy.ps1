@@ -130,7 +130,8 @@ function Show-Help {
 Usage: mgy [command] [options]
 
 Commands:
-  auto, best [agy args]  Autonomous mode: auto-selects profile, kills on 429 quota exhaustion, & resumes
+  auto [agy args]        Autonomous mode: auto-selects profile, kills on 429 quota exhaustion, & resumes
+  best [agy args]        Starts agy on the profile with highest available quota (no auto-switching)
   resume [id] [agy args] Rebind trajectory_meta and resume conversation on best profile
   new <profile>          Create a new isolated profile and authenticate
   import <profile|tar.gz> Import host session into profile OR import conversation archive
@@ -147,6 +148,7 @@ Commands:
 Resume & Conversation Flags:
   mgy auto                            Start session with dynamic quota switching & auto-resume
   mgy auto --continue                 Continue latest conversation with dynamic quota switching
+  mgy best                            Start session on the best profile without auto-switching
   mgy resume [conv_id]                Resume latest (or specified) conversation on best profile
   mgy <profile> -c, --conversation=<id> Resume a specific conversation by ID (auto-rebinds trajectory)
   mgy <profile> --continue            Continue the most recent conversation (auto-rebinds trajectory)
@@ -154,6 +156,7 @@ Resume & Conversation Flags:
 Examples:
   mgy auto                     # Dynamic quota switching: auto-kills on 429 and resumes next best account
   mgy auto --continue          # Continue latest chat with dynamic auto-failover
+  mgy best                     # Pick profile with highest quota and run agy normally
   mgy resume <id>              # Rebind SQLite trajectory and resume chat on best profile
   mgy new work                 # Set up a new profile with Google login
   mgy list                     # List all registered profiles
@@ -597,9 +600,9 @@ function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs, [bool]$A
     $currentProfile = $ProfileName
     [string[]]$currentArgs = if ($AgyArgs) { $AgyArgs } else { @() }
 
-    # Auto-failover is ONLY enabled when explicitly invoked via 'mgy auto', 'mgy best',
+    # Auto-failover is ONLY enabled when explicitly invoked via 'mgy auto',
     # or when MULTIGRAVITY_AUTO_FAILOVER=1 / --auto-failover flag is passed.
-    # Normal 'mgy <profile>' invocations MUST NOT monitor, kill, or switch profiles.
+    # 'mgy best' and normal 'mgy <profile>' invocations MUST NOT monitor, kill, or switch profiles.
     $enableFailover = $AutoFailover -or ($env:MULTIGRAVITY_AUTO_FAILOVER -in @("1", "true", "TRUE"))
     if ($currentArgs -contains "--auto-failover") {
         $enableFailover = $true
@@ -1381,7 +1384,7 @@ with tarfile.open(abs_tar, 'w:gz', compresslevel=1) as tar:
         }
     }
 
-    { $_ -in @("best", "auto") } {
+    auto {
         $modelHint = Get-ModelHintFromArgs -AgyArgs $RemainingArgs
         $best = Select-BestProfile -ModelHint $modelHint
         if (-not $best -or -not $best.Profile) {
@@ -1390,6 +1393,17 @@ with tarfile.open(abs_tar, 'w:gz', compresslevel=1) as tar:
         }
         Write-Host "==> Selected best profile: '$($best.Profile)' [$($best.Tier)] ($($best.Provider): $($best.TargetPct)% quota available)" -ForegroundColor Green
         Start-ProfileSession -ProfileName $best.Profile -AgyArgs $RemainingArgs -AutoFailover $true
+    }
+
+    best {
+        $modelHint = Get-ModelHintFromArgs -AgyArgs $RemainingArgs
+        $best = Select-BestProfile -ModelHint $modelHint
+        if (-not $best -or -not $best.Profile) {
+            Show-AllDepletedAlert
+            exit 1
+        }
+        Write-Host "==> Selected best profile: '$($best.Profile)' [$($best.Tier)] ($($best.Provider): $($best.TargetPct)% quota available)" -ForegroundColor Green
+        Start-ProfileSession -ProfileName $best.Profile -AgyArgs $RemainingArgs -AutoFailover $false
     }
 
     "resume" {

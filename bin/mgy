@@ -18,7 +18,8 @@ print_help() {
 Usage: $CMD_NAME [command] [options]
 
 Commands:
-  auto, best [agy args]  Autonomous mode: auto-selects profile, kills on 429 quota exhaustion, & resumes
+  auto [agy args]        Autonomous mode: auto-selects profile, kills on 429 quota exhaustion, & resumes
+  best [agy args]        Starts agy on the profile with highest available quota (no auto-switching)
   resume [id] [agy args] Rebind trajectory_meta and resume conversation on best profile
   new <profile>          Create a new isolated profile and authenticate
   import <profile|tar.gz> Import host session into profile OR import conversation archive
@@ -35,6 +36,7 @@ Commands:
 Resume & Conversation Flags:
   $CMD_NAME auto                            Start session with dynamic quota switching & auto-resume
   $CMD_NAME auto --continue                 Continue latest conversation with dynamic quota switching
+  $CMD_NAME best                            Start session on the best profile without auto-switching
   $CMD_NAME resume [conv_id]                Resume latest (or specified) conversation on best profile
   $CMD_NAME <profile> -c, --conversation=<id> Resume a specific conversation by ID (auto-rebinds trajectory)
   $CMD_NAME <profile> --continue            Continue the most recent conversation (auto-rebinds trajectory)
@@ -42,6 +44,7 @@ Resume & Conversation Flags:
 Examples:
   $CMD_NAME auto                          # Dynamic quota switching: auto-kills on 429 and resumes next best account
   $CMD_NAME auto --continue               # Continue latest chat with dynamic auto-failover
+  $CMD_NAME best                          # Pick profile with highest quota and run agy normally
   $CMD_NAME resume <id>                   # Rebind SQLite trajectory and resume chat on best profile
   $CMD_NAME new <profile>                 # Set up a new profile with Google login
   $CMD_NAME list                          # List all registered profiles
@@ -1497,7 +1500,7 @@ EOF
         fi
         ;;
 
-    best|auto)
+    auto)
         shift
         model_hint=$(get_model_hint_from_args "$@")
         best_detail=$(select_best_profile "" "$model_hint")
@@ -1508,6 +1511,20 @@ EOF
         IFS='|' read -r best_profile best_tier best_pct _ best_prov <<< "$best_detail"
         echo "==> Selected best profile: '$best_profile' [$best_tier] ($best_prov: ${best_pct}% quota available)"
         start_profile_session "$best_profile" 1 "$@"
+        exit $?
+        ;;
+
+    best)
+        shift
+        model_hint=$(get_model_hint_from_args "$@")
+        best_detail=$(select_best_profile "" "$model_hint")
+        if [ -z "$best_detail" ]; then
+            show_all_depleted_alert
+            exit 1
+        fi
+        IFS='|' read -r best_profile best_tier best_pct _ best_prov <<< "$best_detail"
+        echo "==> Selected best profile: '$best_profile' [$best_tier] ($best_prov: ${best_pct}% quota available)"
+        start_profile_session "$best_profile" 0 "$@"
         exit $?
         ;;
 
