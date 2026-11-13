@@ -126,20 +126,24 @@ Launch interactive sessions under separate profiles in separate terminal tabs, w
 
 Both instances execute simultaneously with full token and quota isolation while sharing all history and settings.
 
-#### Dynamic Quota Switching & Autonomous Resume (`mgy auto`)
-`mgy auto` is the recommended way to run Antigravity. It dynamically manages your accounts and quotas with zero manual intervention:
+#### Dynamic Quota Switching & Autonomous Resume (`mgy auto`) [Experimental / Unstable]
+
+> [!WARNING]
+> **Stability Notice**: `mgy auto` is experimental and may not always work reliably depending on terminal environments, active process streams, or unexpected backend error responses. If you prefer rock-solid reliability without dynamic process termination and automated switching, use **`mgy best`** (which selects and starts the highest quota account without auto-switching) or select profiles manually (`mgy <profile>`).
+
+`mgy auto` attempts to dynamically manage your accounts and quotas with zero manual intervention:
 
 1. **Smart Profile Selection**: Evaluates Gemini quotas across all your accounts and starts `agy` using the profile with the highest remaining quota.
 2. **Real-time Watchdog**: Runs an ultralight background monitor tracking child process output and API limits.
-3. **Instant Auto-Kill & Failover**: The instant Google returns `RESOURCE_EXHAUSTED` (HTTP 429) mid-stream, `mgy auto` immediately terminates the exhausted process.
-4. **Autonomous Resumption**: Automatically rebinds SQLite `trajectory_meta`, switches to the next best account, and resumes your active conversation with:
+3. **Instant Auto-Kill & Failover**: The instant Google returns `RESOURCE_EXHAUSTED` (HTTP 429) mid-stream, `mgy auto` terminates the exhausted process.
+4. **Autonomous Resumption**: Automatically rebinds SQLite `trajectory_meta`, switches to the next best account, and attempts to resume your active conversation with:
    ```text
    "/goal resume what you were doing before the quota depleted"
    ```
 5. **Depleted Alert**: If every configured profile runs out of quota, `mgy auto` displays a prominent notification banner with countdown reset timers.
 
 ```bash
-# Start or continue with dynamic quota switching:
+# Start or continue with dynamic quota switching (experimental):
 mgy auto
 
 # Continue the latest conversation with auto-switching:
@@ -151,8 +155,18 @@ mgy auto --conversation <conversation_id>
 
 # Run non-interactively or with custom flags:
 mgy auto -p "Implement the user auth module" --dangerously-skip-permissions
+
+# For stable runs without automatic switching, use 'mgy best':
+mgy best
 ```
-*(Note: `mgy best` is an alias for `mgy auto`)*
+
+#### Starting the Best Account Without Auto-Switching (`mgy best`)
+If you want to automatically start `agy` using the profile that currently has the most quota available without any background monitoring, process-killing, or automated account switching, use:
+```bash
+mgy best
+mgy best --continue
+mgy best -c <conversation_id>
+```
 
 #### Resuming Conversations Across Profiles & Automatic Failover
 Because conversations and history are shared globally, you can resume any conversation under any account. `mgy` automatically rebinds `trajectory_meta` in SQLite when resuming (`-c <id>`, `--conversation=<id>`, or `--continue`) so switching accounts never causes trajectory ownership collisions, and automatically fails over to the next profile with available quota if your active profile hits `0%` quota:
@@ -246,7 +260,8 @@ Both `mgy` and `multigravity` can be used interchangeably:
 
 | Command                             | Description                                                                                                                      |
 | :---------------------------------- | :------------------------------------------------------------------------------------------------------------------------------- |
-| `mgy auto [args...]`, `mgy best`    | Starts `agy` on the highest quota profile; on quota exhaustion, kills process, switches accounts, and resumes automatically with `/goal resume...` |
+| `mgy auto [args...]`                | *(Experimental / Unstable)* Starts `agy` on highest quota profile; on quota exhaustion, kills process, switches accounts, and attempts to resume automatically. |
+| `mgy best [args...]`                | Selects the profile with highest available quota and starts `agy` normally without auto-switching.                              |
 | `mgy resume [conv_id] [args...]`    | Rebinds `trajectory_meta` in SQLite and resumes the conversation on the profile with the highest remaining quota.                |
 | `mgy <profile> -c <id>`, `--conversation=<id>` | Rebinds `trajectory_meta` and resumes a specific conversation by ID (`-c` is alias for `--conversation`). |
 | `mgy <profile> --continue`          | Continues the most recent conversation (auto-rebinding `trajectory_meta`).                                                       |
