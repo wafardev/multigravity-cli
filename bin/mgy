@@ -816,7 +816,22 @@ select_best_profile() {
     local args=("--best" "--best-format" "detail")
     [ -n "$exclude" ] && args+=("--exclude" "$exclude")
     [ -n "$model_hint" ] && args+=("--model" "$model_hint")
-    "$qbin" "${args[@]}" 2>/dev/null
+    local out
+    out="$("$qbin" "${args[@]}" 2>/dev/null)" || return 1
+    if [ -n "$out" ]; then
+        local pct
+        pct="$(echo "$out" | cut -d'|' -f3)"
+        if [ -n "$pct" ]; then
+            local is_below_1
+            is_below_1="$(python3 -c "import sys; print(1 if float(sys.argv[1]) < 1.0 else 0)" "$pct" 2>/dev/null || echo 0)"
+            if [ "$is_below_1" = "1" ]; then
+                return 1
+            fi
+        fi
+        echo "$out"
+        return 0
+    fi
+    return 1
 }
 
 show_all_depleted_alert() {

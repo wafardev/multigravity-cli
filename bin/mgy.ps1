@@ -462,6 +462,9 @@ function Select-BestProfile([string]$Exclude = "", [string]$ModelHint = "") {
         $out = (& python $quotaScript @qArgs 2>$null | Out-String).Trim()
         if ($LASTEXITCODE -eq 0 -and $out -and $out.Contains("|")) {
             $parts = $out.Split("|")
+            $tgtPct = 0.0
+            [double]::TryParse($parts[2], [System.Globalization.NumberStyles]::Any, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$tgtPct) | Out-Null
+            if ($tgtPct -lt 1.0) { return $null }
             return @{
                 Profile    = $parts[0]
                 Tier       = $parts[1]

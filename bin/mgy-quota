@@ -1253,7 +1253,7 @@ def select_best_profile(exclude_profiles=None, model_hint=None, force_refresh=Fa
         if not r.get("authenticated") or r.get("error"):
             continue
         t_pct, o_pct = score_profile_for_model(r, target_provider, target_model)
-        if t_pct <= 0.0:
+        if t_pct < 1.0:
             continue
         tier_w = TIER_WEIGHTS.get(r.get("tier") or "PRO", 0)
         candidates.append((
@@ -1273,7 +1273,7 @@ def select_best_profile(exclude_profiles=None, model_hint=None, force_refresh=Fa
 
     # Sort descending by (tier_weight, target_pct, overall_pct), then ascending by profile name for stability.
     # Higher tier plans (e.g. ULTRA > PRO > G1-PLUS-TIER) are prioritized even if their remaining quota is lower,
-    # as long as they have available quota (> 0%).
+    # as long as they have available quota (>= 1.0%). Profiles with quota below 1% are treated as depleted.
     candidates.sort(key=lambda x: (-x[1], -x[0], -x[2], x[3]))
     best = candidates[0]
     return {
@@ -1987,7 +1987,7 @@ def main():
         target_prov, target_mod = detect_target_provider_and_model(args.model)
         t_pct, _ = score_profile_for_model(data, target_prov, target_mod)
         conv_err = has_recent_quota_error(args.conv_id) if args.conv_id else False
-        if (data.get("authenticated") and not data.get("error") and t_pct <= 0.0) or conv_err:
+        if (data.get("authenticated") and not data.get("error") and t_pct < 1.0) or conv_err:
             print(f"EXHAUSTED|{t_pct:.1f}|{target_prov}|{target_mod}")
             sys.exit(0)
         else:
