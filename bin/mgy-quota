@@ -1271,8 +1271,10 @@ def select_best_profile(exclude_profiles=None, model_hint=None, force_refresh=Fa
     if not candidates:
         return None
 
-    # Sort descending by (target_pct, tier_weight, overall_pct), then ascending by profile name for stability
-    candidates.sort(key=lambda x: (-x[0], -x[1], -x[2], x[3]))
+    # Sort descending by (tier_weight, target_pct, overall_pct), then ascending by profile name for stability.
+    # Higher tier plans (e.g. ULTRA > PRO > G1-PLUS-TIER) are prioritized even if their remaining quota is lower,
+    # as long as they have available quota (> 0%).
+    candidates.sort(key=lambda x: (-x[1], -x[0], -x[2], x[3]))
     best = candidates[0]
     return {
         "profile": best[3],
