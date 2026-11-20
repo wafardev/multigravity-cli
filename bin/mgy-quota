@@ -1723,10 +1723,12 @@ def set_clipboard_text(text: str) -> bool:
                 continue
     return False
 
-def inject_terminal_repl(text: str, delay_sec: float = 1.5) -> bool:
+def inject_terminal_repl(text: str, delay_sec: float = 1.5, target_pid: int = 0, target_title: str = "", target_hwnd: int = 0) -> bool:
     """
-    Pastes text directly into the active interactive terminal REPL (agy > prompt)
+    Pastes text directly into the target interactive terminal REPL (agy > prompt)
     and presses Enter. Also copies text to clipboard as a seamless fallback.
+    Guarantees that input is strictly directed to the target agy window and
+    prevents pasting into whatever unrelated window currently has focus.
     """
     # 1. Put prompt on clipboard
     try:
@@ -1740,78 +1742,193 @@ def inject_terminal_repl(text: str, delay_sec: float = 1.5) -> bool:
     success = False
 
     if sys.platform == "win32":
-        # Windows: inject characters directly into console input buffer via WriteConsoleInputW
-        # Retry over a short window (e.g. 4 seconds) to ensure the REPL (bubbletea cancelreader)
-        # has initialized and flushed its initial startup buffer.
         import ctypes
         from ctypes import wintypes
 
-        class KEY_EVENT_RECORD(ctypes.Structure):
-            _fields_ = [
-                ("bKeyDown", wintypes.BOOL),
-                ("wRepeatCount", wintypes.WORD),
-                ("wVirtualKeyCode", wintypes.WORD),
-                ("wVirtualScanCode", wintypes.WORD),
-                ("uChar", wintypes.WCHAR),
-                ("dwControlKeyState", wintypes.DWORD),
-            ]
-
-        class INPUT_RECORD(ctypes.Structure):
-            class _EVENT(ctypes.Union):
-                _fields_ = [("KeyEvent", KEY_EVENT_RECORD)]
-            _anonymous_ = ("_EVENT",)
-            _fields_ = [
-                ("EventType", wintypes.WORD),
-                ("_EVENT", _EVENT),
-            ]
-
+        user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
-        CreateFileW = kernel32.CreateFileW
-        CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-        CreateFileW.restype = wintypes.HANDLE
 
-        def write_records_to_conin(records_arr):
-            h = CreateFileW("CONIN$", 0xC0000000, 3, None, 3, 0, None)
-            if not h or h == -1:
+        # Helper to get process ancestor chain (up to 5 levels)
+        def get_ancestor_pids(start_pid):
+            pids = {start_pid} if start_pid else set()
+            if not start_pid:
+                return pids
+            try:
+                class PROCESSENTRY32(ctypes.Structure):
+                    _fields_ = [
+                        ('dwSize', wintypes.DWORD),
+                        ('cntUsage', wintypes.DWORD),
+                        ('th32ProcessID', wintypes.DWORD),
+                        ('th32DefaultHeapID', ctypes.c_void_p),
+                        ('th32ModuleID', wintypes.DWORD),
+                        ('cntThreads', wintypes.DWORD),
+                        ('th32ParentProcessID', wintypes.DWORD),
+                        ('pcPriClassBase', ctypes.c_long),
+                        ('dwFlags', wintypes.DWORD),
+                        ('szExeFile', ctypes.c_char * 260)
+                    ]
+                h_snap = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+                if h_snap != -1:
+                    parent_map = {}
+                    pe = PROCESSENTRY32()
+                    pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
+                    if kernel32.Process32First(h_snap, ctypes.byref(pe)):
+                        while True:
+                            parent_map[pe.th32ProcessID] = pe.th32ParentProcessID
+                            if not kernel32.Process32Next(h_snap, ctypes.byref(pe)):
+                                break
+                    kernel32.CloseHandle(h_snap)
+                    curr = start_pid
+                    for _ in range(5):
+                        p = parent_map.get(curr, 0)
+                        if p and p > 4:
+                            pids.add(p)
+                            curr = p
+                        else:
+                            break
+            except Exception:
+                pass
+            return pids
+
+        candidate_pids = get_ancestor_pids(target_pid) if target_pid else set()
+        if not candidate_pids:
+            try:
+                candidate_pids = get_ancestor_pids(os.getppid())
+            except Exception:
+                pass
+
+        # Helper to find visible windows
+        matched_hwnds = []
+        if target_hwnd and user32.IsWindow(target_hwnd):
+            matched_hwnds.append(target_hwnd)
+
+        # Enumerate top-level windows to locate matching PID or Title
+        try:
+            WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            user32.EnumWindows.argtypes = [WNDENUMPROC, wintypes.LPARAM]
+            user32.EnumWindows.restype = wintypes.BOOL
+
+            def enum_cb(hwnd, lparam):
+                if user32.IsWindowVisible(hwnd):
+                    w_pid = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(w_pid))
+                    
+                    # Match by candidate PIDs
+                    if candidate_pids and w_pid.value in candidate_pids:
+                        if hwnd not in matched_hwnds:
+                            matched_hwnds.append(hwnd)
+                        return True
+
+                    # Match by Title
+                    if target_title:
+                        length = user32.GetWindowTextLengthW(hwnd)
+                        if length > 0:
+                            buff = ctypes.create_unicode_buffer(length + 1)
+                            user32.GetWindowTextW(hwnd, buff, length + 1)
+                            if target_title.lower() in buff.value.lower():
+                                if hwnd not in matched_hwnds:
+                                    matched_hwnds.append(hwnd)
+                return True
+
+            user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+        except Exception:
+            pass
+
+        # Helper to activate a window
+        def activate_target_window(hwnd):
+            try:
+                cur_fg = user32.GetForegroundWindow()
+                if cur_fg == hwnd:
+                    return True
+                cur_tid = kernel32.GetCurrentThreadId()
+                fg_tid = user32.GetWindowThreadProcessId(cur_fg, None) if cur_fg else 0
+                target_tid = user32.GetWindowThreadProcessId(hwnd, None) if hwnd else 0
+
+                if fg_tid:
+                    user32.AttachThreadInput(cur_tid, fg_tid, True)
+                if target_tid and target_tid != cur_tid:
+                    user32.AttachThreadInput(cur_tid, target_tid, True)
+
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                user32.BringWindowToTop(hwnd)
+                user32.SetForegroundWindow(hwnd)
+
+                if fg_tid:
+                    user32.AttachThreadInput(cur_tid, fg_tid, False)
+                if target_tid and target_tid != cur_tid:
+                    user32.AttachThreadInput(cur_tid, target_tid, False)
+                return True
+            except Exception:
                 return False
-            written = wintypes.DWORD()
-            ok = kernel32.WriteConsoleInputW(h, records_arr, len(records_arr), ctypes.byref(written))
-            kernel32.CloseHandle(h)
-            return bool(ok and written.value > 0)
 
-        chars_to_send = text + "\r"
-        records = (INPUT_RECORD * (len(chars_to_send) * 2))()
-        for i, ch in enumerate(chars_to_send):
-            vk = 0x0D if ch == "\r" else 0
-            records[i * 2].EventType = 1
-            records[i * 2].bKeyDown = True
-            records[i * 2].wRepeatCount = 1
-            records[i * 2].wVirtualKeyCode = vk
-            records[i * 2].uChar = ch
+        # Attempt to activate via HWND
+        activated = False
+        target_h = matched_hwnds[0] if matched_hwnds else None
+        if target_h:
+            activate_target_window(target_h)
+            time.sleep(0.15)
+            activated = (user32.GetForegroundWindow() == target_h)
 
-            records[i * 2 + 1].EventType = 1
-            records[i * 2 + 1].bKeyDown = False
-            records[i * 2 + 1].wRepeatCount = 1
-            records[i * 2 + 1].wVirtualKeyCode = vk
-            records[i * 2 + 1].uChar = ch
+        # Fallback activation via PowerShell WScript.Shell AppActivate (by Title or PID)
+        if not activated:
+            ps_activators = []
+            if target_title:
+                clean_t = target_title.replace("'", "''")
+                ps_activators.append(f"$ws.AppActivate('{clean_t}')")
+            if target_pid:
+                ps_activators.append(f"$ws.AppActivate({target_pid})")
+            for p in candidate_pids:
+                if p != target_pid:
+                    ps_activators.append(f"$ws.AppActivate({p})")
 
-        # Bubbletea takes between 1.0s and 2.5s to mount and call FlushConsoleInputBuffer.
-        # We inject multiple waves: at delay_sec, delay_sec + 0.8s, and delay_sec + 1.6s
-        # Also simulate Ctrl+V via WScript.Shell
-        try:
-            write_records_to_conin(records)
-            success = True
-        except Exception:
-            pass
+            if ps_activators:
+                act_script = f"$ws = New-Object -ComObject WScript.Shell; {' -or '.join(ps_activators)}"
+                try:
+                    subprocess.run(["powershell", "-NoProfile", "-Command", act_script], timeout=3.0, capture_output=True)
+                    time.sleep(0.2)
+                except Exception:
+                    pass
 
-        # Try a second wave slightly later to catch REPL after it flushes boot input
-        time.sleep(1.0)
-        try:
-            write_records_to_conin(records)
-        except Exception:
-            pass
+        # Check foreground window ownership before sending keystrokes
+        # Prevent pasting into user's unrelated active window (e.g. browser, editor, discord)
+        is_target_active = False
+        active_fg = user32.GetForegroundWindow()
+        if active_fg:
+            if target_h and active_fg == target_h:
+                is_target_active = True
+            else:
+                active_pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(active_fg, ctypes.byref(active_pid))
+                if candidate_pids and active_pid.value in candidate_pids:
+                    is_target_active = True
+                elif target_title:
+                    len_t = user32.GetWindowTextLengthW(active_fg)
+                    if len_t > 0:
+                        t_buf = ctypes.create_unicode_buffer(len_t + 1)
+                        user32.GetWindowTextW(active_fg, t_buf, len_t + 1)
+                        if target_title.lower() in t_buf.value.lower():
+                            is_target_active = True
 
-        # In Windows Terminal, pasting (> 5 KiB or multiline) opens a safety dialog:
+        # If target window could not be confirmed active, retry activation once more
+        if not is_target_active and target_h:
+            activate_target_window(target_h)
+            time.sleep(0.25)
+            active_fg = user32.GetForegroundWindow()
+            if active_fg == target_h:
+                is_target_active = True
+
+        # SAFETY GATE:
+        # If the target window is still NOT the foreground window, DO NOT paste!
+        # This completely fixes the bug where prompts were pasted into whatever window the user was actively using.
+        if not is_target_active:
+            if not target_pid and not target_title and not target_hwnd:
+                # Allow fallback only for explicit un-targeted legacy CLI invocations
+                is_target_active = True
+            else:
+                # Abort paste to protect user's active window; prompt remains safely on clipboard
+                return False
+
+        # In Windows Terminal / console, pasting (> 5 KiB or multiline) opens a safety dialog:
         # "You are about to paste text that is very large (more than 5 KiB)..."
         # Pressing Enter the first time confirms the paste dialog ("Paste anyway"),
         # and pressing Enter a second time submits the pasted command to the agy prompt.
@@ -1934,6 +2051,9 @@ def main():
     parser.add_argument("--inject-repl", type=str, metavar="PROMPT", help="Inject prompt text into active interactive agy REPL")
     parser.add_argument("--inject-repl-b64", type=str, metavar="B64_PROMPT", help="Inject base64-encoded prompt text into active interactive agy REPL")
     parser.add_argument("--delay", type=float, default=1.5, help="Delay in seconds before REPL injection (default: 1.5)")
+    parser.add_argument("--target-pid", type=int, default=0, help="Target process ID hosting agy REPL")
+    parser.add_argument("--target-title", type=str, default="", help="Target window title hosting agy REPL")
+    parser.add_argument("--target-hwnd", type=int, default=0, help="Target window handle (HWND) hosting agy REPL")
     args = parser.parse_args()
 
     selected_profile = args.profile or args.profile_flag or ""
@@ -1941,13 +2061,25 @@ def main():
     if args.inject_repl_b64:
         try:
             raw_text = base64.b64decode(args.inject_repl_b64.encode("ascii")).decode("utf-8")
-            ok = inject_terminal_repl(raw_text, delay_sec=args.delay)
+            ok = inject_terminal_repl(
+                raw_text,
+                delay_sec=args.delay,
+                target_pid=args.target_pid,
+                target_title=args.target_title,
+                target_hwnd=args.target_hwnd,
+            )
             sys.exit(0 if ok else 1)
         except Exception:
             sys.exit(1)
 
     if args.inject_repl:
-        ok = inject_terminal_repl(args.inject_repl, delay_sec=args.delay)
+        ok = inject_terminal_repl(
+            args.inject_repl,
+            delay_sec=args.delay,
+            target_pid=args.target_pid,
+            target_title=args.target_title,
+            target_hwnd=args.target_hwnd,
+        )
         sys.exit(0 if ok else 1)
 
     if args.record_lockout:

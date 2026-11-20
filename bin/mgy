@@ -1034,9 +1034,9 @@ start_profile_session() {
                 b64_goal="$(printf '%s' "$intercepted_goal" | base64 | tr -d '\r\n')"
             fi
             if [ -n "$b64_goal" ]; then
-                python3 "$qbin" --inject-repl-b64 "$b64_goal" --delay 1.5 >/dev/null 2>&1 &
+                python3 "$qbin" --inject-repl-b64 "$b64_goal" --delay 1.5 --target-pid $$ >/dev/null 2>&1 &
             else
-                python3 "$qbin" --inject-repl "$intercepted_goal" --delay 1.5 >/dev/null 2>&1 &
+                python3 "$qbin" --inject-repl "$intercepted_goal" --delay 1.5 --target-pid $$ >/dev/null 2>&1 &
             fi
         fi
 
@@ -1142,9 +1142,9 @@ start_profile_session() {
                                 b64_resume="$(printf '%s' "$resume_cmd" | base64 | tr -d '\r\n')"
                             fi
                             if [ -n "$b64_resume" ]; then
-                                python3 "$qbin" --inject-repl-b64 "$b64_resume" --delay 1.5 >/dev/null 2>&1 &
+                                python3 "$qbin" --inject-repl-b64 "$b64_resume" --delay 1.5 --target-pid $$ >/dev/null 2>&1 &
                             else
-                                python3 "$qbin" --inject-repl "$resume_cmd" --delay 1.5 >/dev/null 2>&1 &
+                                python3 "$qbin" --inject-repl "$resume_cmd" --delay 1.5 --target-pid $$ >/dev/null 2>&1 &
                             fi
                         fi
                     else

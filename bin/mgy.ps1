@@ -744,8 +744,23 @@ function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs, [bool]$A
             Write-Host "==> Detected '/goal' command passed via CLI flag." -ForegroundColor Cyan
             Write-Host "    Redirecting directly into interactive REPL: '$interceptedGoal'" -ForegroundColor Cyan
             try {
+                $targetTitle = if ($host.UI.RawUI.WindowTitle) { $host.UI.RawUI.WindowTitle } else { "mgy-$currentProfile-$PID" }
+                if (-not $host.UI.RawUI.WindowTitle) {
+                    try { $host.UI.RawUI.WindowTitle = $targetTitle } catch {}
+                }
+                $targetHwnd = 0
+                try {
+                    $proc = Get-Process -Id $PID -ErrorAction SilentlyContinue
+                    if ($proc -and $proc.MainWindowHandle -ne [IntPtr]::Zero) {
+                        $targetHwnd = $proc.MainWindowHandle.ToInt64()
+                    }
+                } catch {}
                 $b64Goal = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($interceptedGoal))
-                Start-Process python -ArgumentList @($quotaScript, "--inject-repl-b64", $b64Goal, "--delay", "1.5") -WindowStyle Hidden
+                $injArgs = @($quotaScript, "--inject-repl-b64", $b64Goal, "--delay", "1.5", "--target-pid", "$PID", "--target-title", $targetTitle)
+                if ($targetHwnd -ne 0) {
+                    $injArgs += @("--target-hwnd", "$targetHwnd")
+                }
+                Start-Process python -ArgumentList $injArgs -WindowStyle Hidden
             } catch {}
         }
 
@@ -870,8 +885,20 @@ function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs, [bool]$A
                             # Spawn background REPL injector to paste /goal into agy's > prompt and copy to clipboard
                             if ($quotaScript) {
                                 try {
+                                    $targetTitle = if ($host.UI.RawUI.WindowTitle) { $host.UI.RawUI.WindowTitle } else { "mgy-$currentProfile-$PID" }
+                                    $targetHwnd = 0
+                                    try {
+                                        $proc = Get-Process -Id $PID -ErrorAction SilentlyContinue
+                                        if ($proc -and $proc.MainWindowHandle -ne [IntPtr]::Zero) {
+                                            $targetHwnd = $proc.MainWindowHandle.ToInt64()
+                                        }
+                                    } catch {}
                                     $b64Resume = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($resumeText))
-                                    Start-Process python -ArgumentList @($quotaScript, "--inject-repl-b64", $b64Resume, "--delay", "1.5") -WindowStyle Hidden
+                                    $injArgs = @($quotaScript, "--inject-repl-b64", $b64Resume, "--delay", "1.5", "--target-pid", "$PID", "--target-title", $targetTitle)
+                                    if ($targetHwnd -ne 0) {
+                                        $injArgs += @("--target-hwnd", "$targetHwnd")
+                                    }
+                                    Start-Process python -ArgumentList $injArgs -WindowStyle Hidden
                                 } catch {}
                             }
                         }
