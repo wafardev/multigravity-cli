@@ -142,8 +142,10 @@ Commands:
   export <conv_id> [tar] Export a conversation into a portable tar.gz archive
   import-conversation <tar> Alias for import conversation archive
   delete <profile>       Delete an existing profile
+  trust [dir]            Register current or specified directory in trustedWorkspaces
   help, --help, -h       Show this help message
   <profile> [agy args]   Start agy session using the specified profile
+  --autoTrust, --auto-trust Auto-approve & register current workspace into trustedWorkspaces
 
 Resume & Conversation Flags:
   mgy auto                            Start session with dynamic quota switching & auto-resume
@@ -599,6 +601,66 @@ function Show-AllDepletedAlert {
     } catch {}
 }
 
+function Register-TrustedWorkspace([string[]]$Dirs) {
+    if (-not $Dirs -or $Dirs.Count -eq 0) {
+        $Dirs = @((Get-Location).Path)
+    }
+    $geminiDir = Join-Path $RealHome ".gemini\antigravity-cli"
+    $settingsFile = Join-Path $geminiDir "settings.json"
+    if (-not (Test-Path $geminiDir)) {
+        New-Item -ItemType Directory -Path $geminiDir -Force | Out-Null
+    }
+
+    try {
+        $settingsData = [PSCustomObject]@{}
+        if (Test-Path $settingsFile) {
+            $rawJson = [System.IO.File]::ReadAllText($settingsFile, [System.Text.Encoding]::UTF8)
+            if (-not [string]::IsNullOrWhiteSpace($rawJson)) {
+                $settingsData = $rawJson | ConvertFrom-Json
+            }
+        }
+
+        $existingList = [System.Collections.Generic.List[string]]::new()
+        if ($settingsData.PSObject.Properties['trustedWorkspaces']) {
+            foreach ($item in $settingsData.trustedWorkspaces) {
+                if (-not [string]::IsNullOrWhiteSpace($item) -and -not $existingList.Contains($item)) {
+                    $existingList.Add($item)
+                }
+            }
+        }
+
+        $modified = $false
+        foreach ($d in $Dirs) {
+            if (-not [string]::IsNullOrWhiteSpace($d)) {
+                $resolved = $d
+                try {
+                    $resolvedPath = (Resolve-Path $d -ErrorAction SilentlyContinue).Path
+                    if ($resolvedPath) { $resolved = $resolvedPath } else { $resolved = [System.IO.Path]::GetFullPath($d) }
+                } catch {
+                    $resolved = $d
+                }
+                if (-not $existingList.Contains($resolved)) {
+                    $existingList.Add($resolved)
+                    $modified = $true
+                    Write-Host "[*] Multigravity: Auto-trusted workspace: '$resolved'" -ForegroundColor DarkGray
+                }
+            }
+        }
+
+        if ($modified) {
+            if (-not $settingsData.PSObject.Properties['trustedWorkspaces']) {
+                $settingsData | Add-Member -MemberType NoteProperty -Name "trustedWorkspaces" -Value @($existingList)
+            } else {
+                $settingsData.trustedWorkspaces = @($existingList)
+            }
+            $newJson = $settingsData | ConvertTo-Json -Depth 10
+            [System.IO.File]::WriteAllText($settingsFile, $newJson, [System.Text.Encoding]::UTF8)
+        }
+    } catch {
+        Write-Warning "[!] Multigravity: Failed to update trustedWorkspaces: $_"
+    }
+}
+
 function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs, [bool]$AutoFailover = $false) {
     $currentProfile = $ProfileName
     [string[]]$currentArgs = if ($AgyArgs) { $AgyArgs } else { @() }
@@ -617,6 +679,30 @@ function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs, [bool]$A
     }
     if ($currentArgs -contains "--version" -or $currentArgs -contains "-v" -or $currentArgs -contains "--help" -or $currentArgs -contains "-h") {
         $enableFailover = $false
+    }
+
+    # Auto-trust workspace: automatically adds current directory (and any --add-dir paths)
+    # into trustedWorkspaces in ~/.gemini/antigravity-cli/settings.json
+    $autoTrust = ($env:MULTIGRAVITY_AUTO_TRUST -in @("1", "true", "TRUE")) -or ($env:MGY_AUTO_TRUST -eq "1")
+    if ($currentArgs -contains "--autoTrust" -or $currentArgs -contains "--auto-trust") {
+        $autoTrust = $true
+        $currentArgs = @($currentArgs | Where-Object { $_ -ne "--autoTrust" -and $_ -ne "--auto-trust" })
+    }
+    if ($currentArgs -contains "--no-trust" -or ($env:MGY_AUTO_TRUST -eq "0")) {
+        $autoTrust = $false
+        $currentArgs = @($currentArgs | Where-Object { $_ -ne "--no-trust" })
+    }
+
+    if ($autoTrust) {
+        $dirsToTrust = @((Get-Location).Path)
+        for ($i = 0; $i -lt $currentArgs.Count; $i++) {
+            if ($currentArgs[$i] -eq "--add-dir" -and ($i + 1) -lt $currentArgs.Count) {
+                $dirsToTrust += $currentArgs[$i + 1]
+            } elseif ($currentArgs[$i] -match "^--add-dir=(.+)$") {
+                $dirsToTrust += $matches[1]
+            }
+        }
+        Register-TrustedWorkspace -Dirs $dirsToTrust
     }
     $triedProfiles = @($currentProfile)
     $quotaScript = Get-QuotaScriptPath
@@ -1399,6 +1485,13 @@ with tarfile.open(abs_tar, 'w:gz', compresslevel=1) as tar:
         } else {
             Write-Host "Aborted."
         }
+    }
+
+    { $_ -in @("trust", "autotrust", "auto-trust") } {
+        $dirs = if ($RemainingArgs.Count -gt 0) { $RemainingArgs } else { @((Get-Location).Path) }
+        Register-TrustedWorkspace -Dirs $dirs
+        Write-Host "Workspace trust registered successfully." -ForegroundColor Green
+        exit 0
     }
 
     { $_ -in @("conversations", "history", "chats") } {

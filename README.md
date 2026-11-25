@@ -195,6 +195,23 @@ mgy <profile> --model gemini-2.5-flash
 mgy <profile> -p "Explain distributed locks in Go"
 ```
 
+#### Automatic Workspace Trust (`--autoTrust` / `mgy trust`)
+Antigravity CLI requires confirmation before reading/editing files in a new project directory (`"Do you trust the contents of this project?"`). `mgy` provides built-in automation to auto-approve and register workspaces into `trustedWorkspaces`:
+
+```bash
+# Auto-approve current workspace for this run:
+mgy best --autoTrust
+mgy auto --autoTrust -c <conv_id>
+
+# Or pre-register the current (or target) directory directly:
+mgy trust
+mgy trust /path/to/project
+
+# Or enable auto-trust globally via environment variable:
+export MGY_AUTO_TRUST=1       # Linux / macOS
+$env:MGY_AUTO_TRUST = "1"     # Windows PowerShell
+```
+
 ---
 
 ### 4. Checking Quotas Across All Accounts

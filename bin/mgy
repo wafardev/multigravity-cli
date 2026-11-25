@@ -849,6 +849,44 @@ show_all_depleted_alert() {
     fi
 }
 
+register_trusted_workspace() {
+    local target_paths=("$@")
+    if [ "${#target_paths[@]}" -eq 0 ]; then
+        target_paths=("$PWD")
+    fi
+    local gemini_dir="$REAL_HOME/.gemini/antigravity-cli"
+    local settings_file="$gemini_dir/settings.json"
+    mkdir -p "$gemini_dir"
+
+    python3 -c "
+import json, os, sys
+settings_file = sys.argv[1]
+dirs_to_add = sys.argv[2:]
+
+data = {}
+if os.path.exists(settings_file):
+    try:
+        with open(settings_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+
+tw = data.setdefault('trustedWorkspaces', [])
+modified = False
+for d in dirs_to_add:
+    if not d.strip(): continue
+    abs_d = os.path.abspath(d)
+    if abs_d not in tw:
+        tw.append(abs_d)
+        modified = True
+        print(f'[*] Multigravity: Auto-trusted workspace: \'{abs_d}\'')
+
+if modified:
+    with open(settings_file, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+" "$settings_file" "${target_paths[@]}" 2>/dev/null || true
+}
+
 start_profile_session() {
     local current_profile="$1"
     local auto_failover="${2:-0}"
@@ -860,12 +898,21 @@ start_profile_session() {
         enable_failover=1
     fi
 
+    local auto_trust=0
+    if [ "${MULTIGRAVITY_AUTO_TRUST:-0}" = "1" ] || [ "${MULTIGRAVITY_AUTO_TRUST:-0}" = "true" ] || [ "${MGY_AUTO_TRUST:-0}" = "1" ]; then
+        auto_trust=1
+    fi
+
     local filtered_init=()
     for a in "${current_args[@]}"; do
         if [ "$a" = "--auto-failover" ]; then
             enable_failover=1
         elif [ "$a" = "--no-failover" ]; then
             enable_failover=0
+        elif [ "$a" = "--autoTrust" ] || [ "$a" = "--auto-trust" ]; then
+            auto_trust=1
+        elif [ "$a" = "--no-trust" ]; then
+            auto_trust=0
         else
             case "$a" in
                 --version|-v|--help|-h) enable_failover=0 ;;
@@ -890,6 +937,19 @@ start_profile_session() {
         fi
 
         setup_profile_environment "$target_dir"
+
+        if [ "$auto_trust" = "1" ]; then
+            local dirs_to_trust=("$PWD")
+            for ((a_idx=0; a_idx<${#current_args[@]}; a_idx++)); do
+                local arg_item="${current_args[a_idx]}"
+                if [ "$arg_item" = "--add-dir" ] && [ $((a_idx + 1)) -lt ${#current_args[@]} ]; then
+                    dirs_to_trust+=("${current_args[$((a_idx + 1))]}")
+                elif [[ "$arg_item" =~ ^--add-dir=(.+)$ ]]; then
+                    dirs_to_trust+=("${BASH_REMATCH[1]}")
+                fi
+            done
+            register_trusted_workspace "${dirs_to_trust[@]}"
+        fi
 
         # Intercept /goal passed via -i, --prompt-interactive, -p, --print, or --prompt
         # agy cannot parse slash commands when passed via CLI flags; it only recognizes them at the interactive REPL prompt (>).
@@ -1502,6 +1562,13 @@ EOF
 
     "")
         usage
+        ;;
+
+    trust|autotrust|auto-trust)
+        shift
+        register_trusted_workspace "$@"
+        echo "Workspace trust registered successfully."
+        exit 0
         ;;
 
     conversations|history|chats)

@@ -1723,12 +1723,108 @@ def set_clipboard_text(text: str) -> bool:
                 continue
     return False
 
-def inject_terminal_repl(text: str, delay_sec: float = 1.5, target_pid: int = 0, target_title: str = "", target_hwnd: int = 0) -> bool:
+def is_task_dispatched(target_text: str, start_epoch: float, profile: str = "") -> bool:
+    """
+    Checks whether the agy session has actually dispatched and registered the task.
+    Inspects history.jsonl (written instantly on prompt submission in interactive REPL),
+    conversation_summaries.db, and transcript.jsonl files.
+    """
+    if not target_text:
+        return False
+
+    clean_target = target_text.strip().lower()
+    prefix = clean_target[:45] if len(clean_target) >= 45 else clean_target
+
+    candidate_histories = []
+    p_dir = get_profiles_dir()
+    if profile:
+        candidate_histories.append(os.path.join(p_dir, profile, ".gemini", "antigravity-cli", "history.jsonl"))
+    candidate_histories.append(os.path.join(get_real_home(), ".gemini", "antigravity-cli", "history.jsonl"))
+
+    if os.path.isdir(p_dir):
+        for p in os.listdir(p_dir):
+            h_path = os.path.join(p_dir, p, ".gemini", "antigravity-cli", "history.jsonl")
+            if h_path not in candidate_histories and os.path.exists(h_path):
+                candidate_histories.append(h_path)
+
+    # 1. Primary check: history.jsonl
+    for h_path in candidate_histories:
+        if not os.path.exists(h_path):
+            continue
+        try:
+            mtime = os.path.getmtime(h_path)
+            if mtime < (start_epoch - 5.0):
+                continue
+            with open(h_path, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+            for line in reversed(lines[-25:]):
+                try:
+                    data = json.loads(line.strip())
+                    ts = data.get("timestamp", 0)
+                    if isinstance(ts, (int, float)) and ts > 1000000000000:
+                        ts = ts / 1000.0
+                    disp = data.get("display", "").strip().lower()
+                    if ts >= (start_epoch - 5.0):
+                        if not prefix or prefix in disp or disp[:45] in clean_target:
+                            return True
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    # 2. Secondary check: conversation_summaries.db and brain transcripts
+    candidate_bases = []
+    if profile:
+        candidate_bases.append(os.path.join(p_dir, profile, ".gemini", "antigravity-cli"))
+    candidate_bases.append(os.path.join(get_real_home(), ".gemini", "antigravity-cli"))
+
+    for base in candidate_bases:
+        sum_db = os.path.join(base, "conversation_summaries.db")
+        if os.path.exists(sum_db):
+            try:
+                mtime = os.path.getmtime(sum_db)
+                if mtime >= (start_epoch - 5.0):
+                    import sqlite3
+                    conn = sqlite3.connect(f"file:{sum_db}?mode=ro", uri=True, timeout=1.0)
+                    rows = conn.execute(
+                        "SELECT conversation_id, last_modified_time FROM conversation_summaries ORDER BY last_modified_time DESC LIMIT 5"
+                    ).fetchall()
+                    conn.close()
+                    for cid, lmt in rows:
+                        if lmt:
+                            try:
+                                dt = datetime.fromisoformat(lmt.replace("Z", "+00:00"))
+                                if dt.timestamp() >= (start_epoch - 5.0):
+                                    t_path = os.path.join(base, "brain", cid, ".system_generated", "logs", "transcript.jsonl")
+                                    if os.path.exists(t_path):
+                                        with open(t_path, "r", encoding="utf-8", errors="ignore") as tf:
+                                            t_content = tf.read().lower()
+                                        if prefix in t_content:
+                                            return True
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+    return False
+
+def inject_terminal_repl(
+    text: str,
+    delay_sec: float = 1.5,
+    target_pid: int = 0,
+    target_title: str = "",
+    target_hwnd: int = 0,
+    profile: str = "",
+    max_retries: int = 4,
+    retry_interval: float = 3.0,
+) -> bool:
     """
     Pastes text directly into the target interactive terminal REPL (agy > prompt)
     and presses Enter. Also copies text to clipboard as a seamless fallback.
     Guarantees that input is strictly directed to the target agy window and
     prevents pasting into whatever unrelated window currently has focus.
+    Includes active dispatch monitoring: continuously verifies whether agy
+    registered and dispatched the task, and automatically retries if missed.
     """
     # 1. Put prompt on clipboard
     try:
@@ -1736,9 +1832,7 @@ def inject_terminal_repl(text: str, delay_sec: float = 1.5, target_pid: int = 0,
     except Exception:
         pass
 
-    if delay_sec > 0:
-        time.sleep(delay_sec)
-
+    start_epoch = time.time()
     success = False
 
     if sys.platform == "win32":
@@ -1798,41 +1892,42 @@ def inject_terminal_repl(text: str, delay_sec: float = 1.5, target_pid: int = 0,
                 pass
 
         # Helper to find visible windows
-        matched_hwnds = []
-        if target_hwnd and user32.IsWindow(target_hwnd):
-            matched_hwnds.append(target_hwnd)
+        def resolve_target_hwnds():
+            matched = []
+            if target_hwnd and user32.IsWindow(target_hwnd):
+                matched.append(target_hwnd)
 
-        # Enumerate top-level windows to locate matching PID or Title
-        try:
-            WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-            user32.EnumWindows.argtypes = [WNDENUMPROC, wintypes.LPARAM]
-            user32.EnumWindows.restype = wintypes.BOOL
+            try:
+                WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+                user32.EnumWindows.argtypes = [WNDENUMPROC, wintypes.LPARAM]
+                user32.EnumWindows.restype = wintypes.BOOL
 
-            def enum_cb(hwnd, lparam):
-                if user32.IsWindowVisible(hwnd):
-                    w_pid = wintypes.DWORD()
-                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(w_pid))
-                    
-                    # Match by candidate PIDs
-                    if candidate_pids and w_pid.value in candidate_pids:
-                        if hwnd not in matched_hwnds:
-                            matched_hwnds.append(hwnd)
-                        return True
+                def enum_cb(hwnd, lparam):
+                    if user32.IsWindowVisible(hwnd):
+                        w_pid = wintypes.DWORD()
+                        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(w_pid))
+                        
+                        # Match by candidate PIDs
+                        if candidate_pids and w_pid.value in candidate_pids:
+                            if hwnd not in matched:
+                                matched.append(hwnd)
+                            return True
 
-                    # Match by Title
-                    if target_title:
-                        length = user32.GetWindowTextLengthW(hwnd)
-                        if length > 0:
-                            buff = ctypes.create_unicode_buffer(length + 1)
-                            user32.GetWindowTextW(hwnd, buff, length + 1)
-                            if target_title.lower() in buff.value.lower():
-                                if hwnd not in matched_hwnds:
-                                    matched_hwnds.append(hwnd)
-                return True
+                        # Match by Title
+                        if target_title:
+                            length = user32.GetWindowTextLengthW(hwnd)
+                            if length > 0:
+                                buff = ctypes.create_unicode_buffer(length + 1)
+                                user32.GetWindowTextW(hwnd, buff, length + 1)
+                                if target_title.lower() in buff.value.lower():
+                                    if hwnd not in matched:
+                                        matched.append(hwnd)
+                    return True
 
-            user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
-        except Exception:
-            pass
+                user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+            except Exception:
+                pass
+            return matched
 
         # Helper to activate a window
         def activate_target_window(hwnd):
@@ -1861,16 +1956,15 @@ def inject_terminal_repl(text: str, delay_sec: float = 1.5, target_pid: int = 0,
             except Exception:
                 return False
 
-        # Attempt to activate via HWND
-        activated = False
-        target_h = matched_hwnds[0] if matched_hwnds else None
-        if target_h:
-            activate_target_window(target_h)
-            time.sleep(0.15)
-            activated = (user32.GetForegroundWindow() == target_h)
+        def ensure_target_focused():
+            matched_hwnds = resolve_target_hwnds()
+            target_h = matched_hwnds[0] if matched_hwnds else None
+            if target_h:
+                activate_target_window(target_h)
+                time.sleep(0.15)
+                if user32.GetForegroundWindow() == target_h:
+                    return True
 
-        # Fallback activation via PowerShell WScript.Shell AppActivate (by Title or PID)
-        if not activated:
             ps_activators = []
             if target_title:
                 clean_t = target_title.replace("'", "''")
@@ -1889,138 +1983,207 @@ def inject_terminal_repl(text: str, delay_sec: float = 1.5, target_pid: int = 0,
                 except Exception:
                     pass
 
-        # Check foreground window ownership before sending keystrokes
-        # Prevent pasting into user's unrelated active window (e.g. browser, editor, discord)
-        is_target_active = False
-        active_fg = user32.GetForegroundWindow()
-        if active_fg:
-            if target_h and active_fg == target_h:
-                is_target_active = True
-            else:
+            active_fg = user32.GetForegroundWindow()
+            if active_fg:
+                if target_h and active_fg == target_h:
+                    return True
                 active_pid = wintypes.DWORD()
                 user32.GetWindowThreadProcessId(active_fg, ctypes.byref(active_pid))
                 if candidate_pids and active_pid.value in candidate_pids:
-                    is_target_active = True
-                elif target_title:
+                    return True
+                if target_title:
                     len_t = user32.GetWindowTextLengthW(active_fg)
                     if len_t > 0:
                         t_buf = ctypes.create_unicode_buffer(len_t + 1)
                         user32.GetWindowTextW(active_fg, t_buf, len_t + 1)
                         if target_title.lower() in t_buf.value.lower():
-                            is_target_active = True
+                            return True
 
-        # If target window could not be confirmed active, retry activation once more
-        if not is_target_active and target_h:
-            activate_target_window(target_h)
-            time.sleep(0.25)
-            active_fg = user32.GetForegroundWindow()
-            if active_fg == target_h:
-                is_target_active = True
+            if target_h:
+                activate_target_window(target_h)
+                time.sleep(0.25)
+                if user32.GetForegroundWindow() == target_h:
+                    return True
 
-        # SAFETY GATE:
-        # If the target window is still NOT the foreground window, DO NOT paste!
-        # This completely fixes the bug where prompts were pasted into whatever window the user was actively using.
-        if not is_target_active:
             if not target_pid and not target_title and not target_hwnd:
-                # Allow fallback only for explicit un-targeted legacy CLI invocations
-                is_target_active = True
-            else:
-                # Abort paste to protect user's active window; prompt remains safely on clipboard
-                return False
+                return True
+            return False
 
-        # In Windows Terminal / console, pasting (> 5 KiB or multiline) opens a safety dialog:
-        # "You are about to paste text that is very large (more than 5 KiB)..."
-        # Pressing Enter the first time confirms the paste dialog ("Paste anyway"),
-        # and pressing Enter a second time submits the pasted command to the agy prompt.
-        try:
-            ps_cmd = (
-                "$wshell = New-Object -ComObject WScript.Shell; "
-                "$wshell.SendKeys('^v'); "
-                "Start-Sleep -Milliseconds 300; "
-                "$wshell.SendKeys('{ENTER}'); "
-                "Start-Sleep -Milliseconds 400; "
-                "$wshell.SendKeys('{ENTER}')"
-            )
-            subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], timeout=4.0, capture_output=True)
-            success = True
-        except Exception:
-            pass
+        # Active Monitor & Retry Loop
+        for attempt in range(1, max_retries + 1):
+            if attempt == 1:
+                if delay_sec > 0:
+                    time.sleep(delay_sec)
+            else:
+                time.sleep(retry_interval)
+
+            if target_pid and not is_pid_alive(target_pid):
+                break
+
+            if is_task_dispatched(text, start_epoch, profile=profile):
+                return True
+
+            if attempt > 1:
+                set_clipboard_text(text)
+
+            is_focused = ensure_target_focused()
+            if not is_focused:
+                continue
+
+            # On retry attempts, first try pressing ENTER in case text was already pasted
+            # but submission was swallowed by terminal dialog or startup timing
+            if attempt > 1:
+                try:
+                    ps_enter = "$wshell = New-Object -ComObject WScript.Shell; $wshell.SendKeys('{ENTER}'); Start-Sleep -Milliseconds 300; $wshell.SendKeys('{ENTER}')"
+                    subprocess.run(["powershell", "-NoProfile", "-Command", ps_enter], timeout=3.0, capture_output=True)
+                    time.sleep(0.8)
+                    if is_task_dispatched(text, start_epoch, profile=profile):
+                        return True
+                except Exception:
+                    pass
+
+            # Send full paste and submission sequence
+            try:
+                ps_cmd = (
+                    "$wshell = New-Object -ComObject WScript.Shell; "
+                    "$wshell.SendKeys('^v'); "
+                    "Start-Sleep -Milliseconds 350; "
+                    "$wshell.SendKeys('{ENTER}'); "
+                    "Start-Sleep -Milliseconds 450; "
+                    "$wshell.SendKeys('{ENTER}'); "
+                    "Start-Sleep -Milliseconds 300; "
+                    "$wshell.SendKeys('{ENTER}')"
+                )
+                subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], timeout=4.0, capture_output=True)
+            except Exception:
+                pass
+
+            # Poll for dispatch over the next ~3.0s
+            for _ in range(6):
+                time.sleep(0.5)
+                if is_task_dispatched(text, start_epoch, profile=profile):
+                    return True
+                if target_pid and not is_pid_alive(target_pid):
+                    return False
+
+        return is_task_dispatched(text, start_epoch, profile=profile)
+
     elif sys.platform == "darwin":
         # macOS: activate terminal application and paste via AppleScript
-        try:
-            def find_terminal_pid():
-                p = os.getppid()
-                while p > 1:
-                    try:
-                        out = subprocess.check_output(["ps", "-p", str(p), "-o", "ppid=,comm="]).decode().strip()
-                        ppid_str, comm = out.split(None, 1)
-                        if ".app" in comm:
-                            return p
-                        p = int(ppid_str)
-                    except Exception:
-                        break
-                return None
+        def find_terminal_pid():
+            p = target_pid or os.getppid()
+            while p > 1:
+                try:
+                    out = subprocess.check_output(["ps", "-p", str(p), "-o", "ppid=,comm="]).decode().strip()
+                    ppid_str, comm = out.split(None, 1)
+                    if ".app" in comm:
+                        return p
+                    p = int(ppid_str)
+                except Exception:
+                    break
+            return None
 
-            term_pid = find_terminal_pid()
-            act_cmd = f"try\nset termProc to first process whose unix id is {term_pid}\nset frontmost of termProc to true\nend try\ndelay 0.2\n" if term_pid else ""
-            osa = f"""
+        term_pid = find_terminal_pid()
+        act_cmd = f"try\nset termProc to first process whose unix id is {term_pid}\nset frontmost of termProc to true\nend try\ndelay 0.2\n" if term_pid else ""
+        osa = f"""
 tell application "System Events"
 {act_cmd}
     try
         tell termProc to keystroke "v" using command down
-        delay 0.15
+        delay 0.2
         tell termProc to key code 36
     on error
         keystroke "v" using command down
-        delay 0.15
+        delay 0.2
         key code 36
     end try
 end tell
 """
-            subprocess.run(["osascript", "-e", osa], capture_output=True, timeout=4.0)
-            success = True
-        except Exception:
-            pass
+        for attempt in range(1, max_retries + 1):
+            if attempt == 1:
+                if delay_sec > 0:
+                    time.sleep(delay_sec)
+            else:
+                time.sleep(retry_interval)
+
+            if target_pid and not is_pid_alive(target_pid):
+                break
+
+            if is_task_dispatched(text, start_epoch, profile=profile):
+                return True
+
+            try:
+                subprocess.run(["osascript", "-e", osa], capture_output=True, timeout=4.0)
+            except Exception:
+                pass
+
+            for _ in range(6):
+                time.sleep(0.5)
+                if is_task_dispatched(text, start_epoch, profile=profile):
+                    return True
+                if target_pid and not is_pid_alive(target_pid):
+                    return False
+
+        return is_task_dispatched(text, start_epoch, profile=profile)
+
     else:
         # Linux / Raspberry Pi: inject into controlling tty if supported
         clean_text = text.rstrip("\r\n").replace("\r\n", "\n").replace("\r", "\n")
         bytes_to_send = clean_text.encode("utf-8") + b"\r"
-        try:
-            import fcntl
-            import termios
-            for tty_path in ["/dev/tty", sys.stdin.name if hasattr(sys.stdin, "name") else None]:
-                if not tty_path:
-                    continue
-                try:
-                    with open(tty_path, "w") as tty:
-                        for b in bytes_to_send:
-                            fcntl.ioctl(tty.fileno(), termios.TIOCSTI, bytes([b]))
-                        success = True
-                        break
-                except Exception:
-                    continue
-        except Exception:
-            pass
 
-        if not success:
-            # Fallback for systems where TIOCSTI is restricted (e.g. Linux 6.2+ legacy_tiocsti=0)
-            # Try xdotool (X11) or wtype (Wayland)
-            import shutil
+        for attempt in range(1, max_retries + 1):
+            if attempt == 1:
+                if delay_sec > 0:
+                    time.sleep(delay_sec)
+            else:
+                time.sleep(retry_interval)
+
+            if target_pid and not is_pid_alive(target_pid):
+                break
+
+            if is_task_dispatched(text, start_epoch, profile=profile):
+                return True
+
+            success_tty = False
             try:
-                if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wtype"):
-                    subprocess.run(["wtype", clean_text], timeout=3.0, capture_output=True)
-                    time.sleep(0.05)
-                    subprocess.run(["wtype", "-k", "Return"], timeout=2.0, capture_output=True)
-                    success = True
-                elif os.environ.get("DISPLAY") and shutil.which("xdotool"):
-                    subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "0", clean_text], timeout=3.0, capture_output=True)
-                    time.sleep(0.05)
-                    subprocess.run(["xdotool", "key", "Return"], timeout=2.0, capture_output=True)
-                    success = True
+                import fcntl
+                import termios
+                for tty_path in ["/dev/tty", sys.stdin.name if hasattr(sys.stdin, "name") else None]:
+                    if not tty_path:
+                        continue
+                    try:
+                        with open(tty_path, "w") as tty:
+                            for b in bytes_to_send:
+                                fcntl.ioctl(tty.fileno(), termios.TIOCSTI, bytes([b]))
+                            success_tty = True
+                            break
+                    except Exception:
+                        continue
             except Exception:
                 pass
 
-    return success
+            if not success_tty:
+                import shutil
+                try:
+                    if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wtype"):
+                        subprocess.run(["wtype", clean_text], timeout=3.0, capture_output=True)
+                        time.sleep(0.05)
+                        subprocess.run(["wtype", "-k", "Return"], timeout=2.0, capture_output=True)
+                    elif os.environ.get("DISPLAY") and shutil.which("xdotool"):
+                        subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "0", clean_text], timeout=3.0, capture_output=True)
+                        time.sleep(0.05)
+                        subprocess.run(["xdotool", "key", "Return"], timeout=2.0, capture_output=True)
+                except Exception:
+                    pass
+
+            for _ in range(6):
+                time.sleep(0.5)
+                if is_task_dispatched(text, start_epoch, profile=profile):
+                    return True
+                if target_pid and not is_pid_alive(target_pid):
+                    return False
+
+        return is_task_dispatched(text, start_epoch, profile=profile)
 
 def main():
     parser = argparse.ArgumentParser(description="mgy Quota Dashboard TUI & Profile Selector")
@@ -2067,6 +2230,7 @@ def main():
                 target_pid=args.target_pid,
                 target_title=args.target_title,
                 target_hwnd=args.target_hwnd,
+                profile=selected_profile,
             )
             sys.exit(0 if ok else 1)
         except Exception:
@@ -2079,6 +2243,7 @@ def main():
             target_pid=args.target_pid,
             target_title=args.target_title,
             target_hwnd=args.target_hwnd,
+            profile=selected_profile,
         )
         sys.exit(0 if ok else 1)
 
