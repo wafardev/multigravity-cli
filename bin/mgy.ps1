@@ -4,8 +4,25 @@ mgy (multigravity) - Profile manager for Antigravity CLI (agy) on Windows
 Manages isolated credentials, sessions, and configurations per profile.
 #>
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
-$Command = if ($args.Count -gt 0) { [string]$args[0] } else { $null }
-[string[]]$RemainingArgs = @($args | Select-Object -Skip 1)
+$GlobalProxyArg = $null
+[string[]]$FilteredArgs = @()
+for ($i = 0; $i -lt $args.Count; $i++) {
+    $a = [string]$args[$i]
+    if ($a -match "^--proxy=(.+)$") {
+        $GlobalProxyArg = $matches[1]
+    } elseif ($a -eq "--proxy" -and ($i + 1) -lt $args.Count) {
+        $GlobalProxyArg = [string]$args[$i + 1]
+        $i++
+    } else {
+        $FilteredArgs += $a
+    }
+}
+if (-not $GlobalProxyArg) {
+    if ($env:MULTIGRAVITY_PROXY) { $GlobalProxyArg = $env:MULTIGRAVITY_PROXY }
+    elseif ($env:MGY_PROXY) { $GlobalProxyArg = $env:MGY_PROXY }
+}
+$Command = if ($FilteredArgs.Count -gt 0) { [string]$FilteredArgs[0] } else { $null }
+[string[]]$RemainingArgs = @($FilteredArgs | Select-Object -Skip 1)
 
 
 # Resolve Home and Profiles Directory
@@ -141,10 +158,12 @@ Commands:
   fork --conversation=<id> Fork an existing conversation across all other profiles
   export <conv_id> [tar] Export a conversation into a portable tar.gz archive
   import-conversation <tar> Alias for import conversation archive
+  proxy <profile> [spec|off] View, set, test, or remove proxy for a profile
   delete <profile>       Delete an existing profile
   trust [dir]            Register current or specified directory in trustedWorkspaces
   help, --help, -h       Show this help message
   <profile> [agy args]   Start agy session using the specified profile
+  --proxy <address:port:user:pass> Route traffic through HTTP/HTTPS proxy
   --autoTrust, --auto-trust Auto-approve & register current workspace into trustedWorkspaces
 
 Resume & Conversation Flags:
@@ -161,6 +180,9 @@ Examples:
   mgy best                     # Pick profile with highest quota and run agy normally
   mgy resume <id>              # Rebind SQLite trajectory and resume chat on best profile
   mgy new work                 # Set up a new profile with Google login
+  mgy proxy work 1.2.3.4:8080:u:p # Set & test proxy for profile
+  mgy proxy work off           # Remove proxy from profile
+  mgy work --proxy 1.2.3.4:8080 # One-off run with proxy
   mgy list                     # List all registered profiles
   mgy fork -c <id>             # Fork conversation across all profiles
   mgy export <id> [path.tar.gz] # Export conversation to a portable archive
@@ -398,6 +420,95 @@ function Get-ProfileAccount([string]$ProfilePath) {
     return $null
 }
 
+function Format-ProxyUrl([string]$ProxyStr) {
+    if ([string]::IsNullOrWhiteSpace($ProxyStr)) { return $null }
+    $s = $ProxyStr.Trim()
+    if ($s.ToLower() -in @("off", "none", "clear", "delete", "remove", "disable")) { return $null }
+    if ($s -match "^[a-zA-Z][a-zA-Z0-9+.-]*://") { return $s }
+    
+    $parts = $s.Split(":", 4)
+    if ($parts.Count -eq 4 -and ($parts[1] -match "^\d+$")) {
+        $h = $parts[0]
+        $p = $parts[1]
+        $u = [System.Uri]::EscapeDataString($parts[2])
+        $pw = [System.Uri]::EscapeDataString($parts[3])
+        return "http://$($u):$($pw)@$($h):$($p)"
+    }
+    if ($s -like "*@*") { return "http://$s" }
+    if ($parts.Count -eq 2 -and ($parts[1] -match "^\d+$")) {
+        return "http://$($parts[0]):$($parts[1])"
+    }
+    return "http://$s"
+}
+
+function Get-MaskedProxyUrl([string]$ProxyUrl) {
+    if ([string]::IsNullOrWhiteSpace($ProxyUrl)) { return "" }
+    return ($ProxyUrl -replace "://([^:]+):([^@]+)@", "://`$1:***@")
+}
+
+function Get-ProxyHostPort([string]$ProxyUrl) {
+    if ([string]::IsNullOrWhiteSpace($ProxyUrl)) { return "" }
+    try {
+        $uri = [System.Uri]$ProxyUrl
+        if ($uri.Port -gt 0 -and $uri.Port -ne 80 -and $uri.Port -ne 443) {
+            return "$($uri.Host):$($uri.Port)"
+        }
+        return $uri.Host
+    } catch {
+        return $ProxyUrl
+    }
+}
+
+function Get-ProfileProxy([string]$ProfileName) {
+    if (-not $ProfileName) { return $null }
+    $pDir = Join-Path $ProfilesDir $ProfileName
+    $proxyFile = Join-Path $pDir ".proxy"
+    if (Test-Path $proxyFile) {
+        $content = (Get-Content $proxyFile -Raw -ErrorAction SilentlyContinue)
+        if ($content) {
+            $raw = $content.Trim()
+            return Format-ProxyUrl $raw
+        }
+    }
+    return $null
+}
+
+function Set-ProfileProxy([string]$ProfileName, [string]$ProxySpec) {
+    $pDir = Join-Path $ProfilesDir $ProfileName
+    if (-not (Test-Path $pDir)) {
+        Write-Error "Error: Profile '$ProfileName' does not exist at $pDir"
+        return $false
+    }
+    $proxyFile = Join-Path $pDir ".proxy"
+    $formatted = Format-ProxyUrl $ProxySpec
+    if (-not $formatted) {
+        if (Test-Path $proxyFile) {
+            Remove-Item $proxyFile -Force -ErrorAction SilentlyContinue
+        }
+        return $true
+    }
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($proxyFile, $formatted, $utf8NoBom)
+    return $true
+}
+
+function Remove-ProfileProxy([string]$ProfileName) {
+    $pDir = Join-Path $ProfilesDir $ProfileName
+    $proxyFile = Join-Path $pDir ".proxy"
+    if (Test-Path $proxyFile) {
+        Remove-Item $proxyFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-ProxyConnection([string]$ProxyUrl) {
+    $quotaScript = Get-QuotaScriptPath
+    if ($quotaScript) {
+        $testOut = (& python $quotaScript --test-proxy $ProxyUrl 2>&1 | Out-String).Trim()
+        return $testOut
+    }
+    return "OK"
+}
+
 function Show-ProfilesList {
     Write-Host "Available profiles:" -ForegroundColor Cyan
     if ((Test-Path $ProfilesDir) -and (Get-ChildItem -Path $ProfilesDir -Directory -ErrorAction SilentlyContinue)) {
@@ -407,13 +518,20 @@ function Show-ProfilesList {
             $bullet = [char]0x2022
             foreach ($d in $dirs) {
                 $account = Get-ProfileAccount $d.FullName
+                $proxy = Get-ProfileProxy $d.Name
                 $paddedName = $d.Name.PadRight($maxLen)
                 Write-Host "  $bullet " -NoNewline
                 Write-Host $paddedName -NoNewline -ForegroundColor White
                 if ($account) {
-                    Write-Host "  ($account)" -ForegroundColor Gray
+                    Write-Host "  ($account)" -NoNewline -ForegroundColor Gray
                 } else {
-                    Write-Host "  (not authenticated)" -ForegroundColor Yellow
+                    Write-Host "  (not authenticated)" -NoNewline -ForegroundColor Yellow
+                }
+                if ($proxy) {
+                    $hp = Get-ProxyHostPort $proxy
+                    Write-Host "  [Proxy: $hp]" -ForegroundColor DarkCyan
+                } else {
+                    Write-Host ""
                 }
             }
         } else {
@@ -460,6 +578,7 @@ function Select-BestProfile([string]$Exclude = "", [string]$ModelHint = "") {
     $qArgs = @("--best", "--best-format", "detail")
     if ($Exclude) { $qArgs += @("--exclude", $Exclude) }
     if ($ModelHint) { $qArgs += @("--model", $ModelHint) }
+    if ($GlobalProxyArg) { $qArgs += @("--proxy", $GlobalProxyArg) }
     try {
         $out = (& python $quotaScript @qArgs 2>$null | Out-String).Trim()
         if ($LASTEXITCODE -eq 0 -and $out -and $out.Contains("|")) {
@@ -809,6 +928,23 @@ function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs, [bool]$A
         $sessionStartEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         $prevUserProfile = $env:USERPROFILE
         $prevHome = $env:HOME
+        $prevHttpProxy = $env:HTTP_PROXY
+        $prevHttpsProxy = $env:HTTPS_PROXY
+        $prevAllProxy = $env:ALL_PROXY
+        $prevHttpProxyLower = $env:http_proxy
+        $prevHttpsProxyLower = $env:https_proxy
+        $prevAllProxyLower = $env:all_proxy
+
+        $effectiveProxy = if ($GlobalProxyArg) { Format-ProxyUrl $GlobalProxyArg } else { Get-ProfileProxy $currentProfile }
+        if ($effectiveProxy) {
+            $env:HTTP_PROXY = $effectiveProxy
+            $env:HTTPS_PROXY = $effectiveProxy
+            $env:ALL_PROXY = $effectiveProxy
+            $env:http_proxy = $effectiveProxy
+            $env:https_proxy = $effectiveProxy
+            $env:all_proxy = $effectiveProxy
+            Write-Host "==> Proxy enabled: $(Get-MaskedProxyUrl $effectiveProxy)" -ForegroundColor DarkCyan
+        }
 
         # Start background monitor to watch and kill agy if quota depletes
         $monitorProc = $null
@@ -820,6 +956,9 @@ function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs, [bool]$A
                 $monArgs = @($quotaScript, "--monitor-session", "--profile", $currentProfile, "--parent-pid", "$PID", "--since", "$sessionStartEpoch")
                 if ($activeConvId) {
                     $monArgs += @("--conv-id", $activeConvId)
+                }
+                if ($effectiveProxy) {
+                    $monArgs += @("--proxy", $effectiveProxy)
                 }
                 $monitorProc = Start-Process python -ArgumentList $monArgs -WindowStyle Hidden -PassThru
             } catch {}
@@ -905,6 +1044,12 @@ function Start-ProfileSession([string]$ProfileName, [string[]]$AgyArgs, [bool]$A
 
             $env:USERPROFILE = $prevUserProfile
             $env:HOME = $prevHome
+            $env:HTTP_PROXY = $prevHttpProxy
+            $env:HTTPS_PROXY = $prevHttpsProxy
+            $env:ALL_PROXY = $prevAllProxy
+            $env:http_proxy = $prevHttpProxyLower
+            $env:https_proxy = $prevHttpsProxyLower
+            $env:all_proxy = $prevAllProxyLower
         }
 
         # Process-level quota exhaustion check & automatic session resume on next best profile (auto mode only)
@@ -1012,6 +1157,73 @@ switch -Wildcard ($Command) {
 
     "list" {
         Show-ProfilesList
+    }
+
+    "proxy" {
+        $targetProf = if ($RemainingArgs.Count -gt 0) { $RemainingArgs[0] } else { $null }
+        $proxyValue = if ($RemainingArgs.Count -gt 1) { $RemainingArgs[1] } else { $GlobalProxyArg }
+
+        if (-not $targetProf) {
+            Write-Host "Usage: mgy proxy <profile> [<address:port:user:pass>|off]" -ForegroundColor Yellow
+            Write-Host "       mgy proxy --test <address:port:user:pass>" -ForegroundColor Yellow
+            exit 1
+        }
+
+        if ($targetProf -in @("--test", "-t", "test")) {
+            if (-not $proxyValue) {
+                Write-Error "Error: Missing proxy spec to test. Usage: mgy proxy --test <address:port:user:pass>"
+                exit 1
+            }
+            $formatted = Format-ProxyUrl $proxyValue
+            Write-Host "Testing proxy connection: $(Get-MaskedProxyUrl $formatted)..." -ForegroundColor Cyan
+            $res = Test-ProxyConnection $formatted
+            Write-Host $res
+            exit 0
+        }
+
+        $pDir = Join-Path $ProfilesDir $targetProf
+        if (-not (Test-Path $pDir)) {
+            Write-Error "Error: Profile '$targetProf' does not exist at $pDir"
+            exit 1
+        }
+
+        if (-not $proxyValue) {
+            # View current proxy
+            $current = Get-ProfileProxy $targetProf
+            if ($current) {
+                Write-Host "Profile '$targetProf' proxy: $(Get-MaskedProxyUrl $current)" -ForegroundColor Cyan
+                Write-Host "Testing connectivity..." -ForegroundColor DarkGray
+                $res = Test-ProxyConnection $current
+                Write-Host $res
+            } else {
+                Write-Host "Profile '$targetProf' has no proxy configured." -ForegroundColor Yellow
+            }
+            exit 0
+        }
+
+        if ($proxyValue.ToLower() -in @("off", "none", "clear", "delete", "remove", "disable")) {
+            Remove-ProfileProxy $targetProf
+            Write-Host "Proxy removed from profile '$targetProf'." -ForegroundColor Green
+            exit 0
+        }
+
+        $formatted = Format-ProxyUrl $proxyValue
+        if (-not $formatted) {
+            Write-Error "Error: Invalid proxy specification: $proxyValue"
+            exit 1
+        }
+
+        Write-Host "Testing proxy connectivity for $(Get-MaskedProxyUrl $formatted)..." -ForegroundColor DarkGray
+        $testResult = Test-ProxyConnection $formatted
+        if ($testResult -like "*OK*" -or $testResult -like "*Exit IP*") {
+            Write-Host $testResult -ForegroundColor Green
+        } else {
+            Write-Host $testResult -ForegroundColor Yellow
+        }
+
+        Set-ProfileProxy $targetProf $formatted | Out-Null
+        Write-Host "Successfully saved proxy for profile '$targetProf': $(Get-MaskedProxyUrl $formatted)" -ForegroundColor Green
+        exit 0
     }
 
     "fork" {
@@ -1339,6 +1551,12 @@ with tarfile.open(abs_tar, 'w:gz', compresslevel=1) as tar:
         New-Item -ItemType Directory -Path $tokensDir -Force | Out-Null
         Setup-ProfileEnvironment -TargetDir $targetDir
 
+        if ($GlobalProxyArg) {
+            Set-ProfileProxy $profileName $GlobalProxyArg | Out-Null
+            Write-Host "Configured proxy for profile '$profileName': $(Get-MaskedProxyUrl (Format-ProxyUrl $GlobalProxyArg))" -ForegroundColor DarkCyan
+        }
+        $effectiveProxy = Get-ProfileProxy $profileName
+
         Write-Host "Setting up profile '$profileName'..." -ForegroundColor Cyan
 
         Ensure-WinCredManager
@@ -1350,9 +1568,24 @@ with tarfile.open(abs_tar, 'w:gz', compresslevel=1) as tar:
 
         $prevUserProfile = $env:USERPROFILE
         $prevHome = $env:HOME
+        $prevHttpProxy = $env:HTTP_PROXY
+        $prevHttpsProxy = $env:HTTPS_PROXY
+        $prevAllProxy = $env:ALL_PROXY
+        $prevHttpProxyLower = $env:http_proxy
+        $prevHttpsProxyLower = $env:https_proxy
+        $prevAllProxyLower = $env:all_proxy
         try {
             $env:USERPROFILE = $targetDir
             $env:HOME = $targetDir
+            if ($effectiveProxy) {
+                $env:HTTP_PROXY = $effectiveProxy
+                $env:HTTPS_PROXY = $effectiveProxy
+                $env:ALL_PROXY = $effectiveProxy
+                $env:http_proxy = $effectiveProxy
+                $env:https_proxy = $effectiveProxy
+                $env:all_proxy = $effectiveProxy
+                Write-Host "==> Proxy enabled: $(Get-MaskedProxyUrl $effectiveProxy)" -ForegroundColor DarkCyan
+            }
             # Launch agy in interactive mode to authenticate without the 60s headless timeout
             & agy
         } finally {
@@ -1375,6 +1608,12 @@ with tarfile.open(abs_tar, 'w:gz', compresslevel=1) as tar:
             }
             $env:USERPROFILE = $prevUserProfile
             $env:HOME = $prevHome
+            $env:HTTP_PROXY = $prevHttpProxy
+            $env:HTTPS_PROXY = $prevHttpsProxy
+            $env:ALL_PROXY = $prevAllProxy
+            $env:http_proxy = $prevHttpProxyLower
+            $env:https_proxy = $prevHttpsProxyLower
+            $env:all_proxy = $prevAllProxyLower
         }
     }
 
@@ -1454,7 +1693,8 @@ with tarfile.open(abs_tar, 'w:gz', compresslevel=1) as tar:
                     }
                 } catch {}
             }
-            python $quotaScript @RemainingArgs
+            $qArgs = if ($GlobalProxyArg) { @("--proxy", $GlobalProxyArg) + $RemainingArgs } else { $RemainingArgs }
+            python $quotaScript @qArgs
             exit $LASTEXITCODE
         } else {
             # Fallback

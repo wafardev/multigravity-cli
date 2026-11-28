@@ -66,12 +66,143 @@ try:
 except Exception:
     _HTTP_POOL = None
 
-def http_post_json(url, headers, payload_dict, timeout=10.0):
+_PROXY_POOLS = {}
+
+def get_proxy_pool(proxy_url):
+    if _HTTP_POOL is None or not proxy_url:
+        return None
+    if proxy_url not in _PROXY_POOLS:
+        try:
+            _PROXY_POOLS[proxy_url] = urllib3.ProxyManager(
+                proxy_url,
+                maxsize=8,
+                retries=False,
+                timeout=urllib3.Timeout(connect=5.0, read=10.0)
+            )
+        except Exception:
+            _PROXY_POOLS[proxy_url] = None
+    return _PROXY_POOLS.get(proxy_url)
+
+def format_proxy_url(proxy_str):
+    if not proxy_str:
+        return None
+    s = proxy_str.strip()
+    if not s or s.lower() in ("off", "none", "clear", "delete", "remove", "disable"):
+        return None
+    if "://" in s:
+        return s
+    
+    # Check 4-part provider residential format: host:port:user:pass
+    parts = s.split(":", 3)
+    if len(parts) == 4 and parts[1].isdigit():
+        h, p, u, pw = parts
+        return f"http://{urllib.parse.quote(u, safe='')}:{urllib.parse.quote(pw, safe='')}@{h}:{p}"
+    
+    if "@" in s:
+        return f"http://{s}"
+        
+    if len(parts) == 2 and parts[1].isdigit():
+        return f"http://{parts[0]}:{parts[1]}"
+    return f"http://{s}"
+
+def get_masked_proxy(proxy_url):
+    if not proxy_url:
+        return ""
+    try:
+        p = urllib.parse.urlsplit(proxy_url)
+        if p.password:
+            netloc = f"{p.username}:***@{p.hostname}"
+            if p.port:
+                netloc += f":{p.port}"
+            return urllib.parse.urlunsplit((p.scheme, netloc, p.path, p.query, p.fragment))
+    except Exception:
+        pass
+    return re.sub(r":([^:@]+)@", r":***@", proxy_url)
+
+def get_proxy_host_port(proxy_url):
+    if not proxy_url:
+        return ""
+    try:
+        p = urllib.parse.urlsplit(proxy_url)
+        if p.hostname:
+            return f"{p.hostname}:{p.port}" if p.port else p.hostname
+    except Exception:
+        pass
+    return proxy_url
+
+def get_profile_proxy(profile_path):
+    if not profile_path or not os.path.isdir(profile_path):
+        return None
+    proxy_file = os.path.join(profile_path, ".proxy")
+    if os.path.exists(proxy_file):
+        try:
+            with open(proxy_file, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    return format_proxy_url(content)
+        except Exception:
+            pass
+    return None
+
+def test_proxy_connection(proxy_url, timeout=4.0):
+    """Tests connection through proxy to https://api.ipify.org?format=json and returns exit IP."""
+    target_url = "https://api.ipify.org?format=json"
+    req_headers = {"User-Agent": "multigravity/1.0"}
+    try:
+        import urllib3
+        pool = urllib3.ProxyManager(proxy_url, timeout=urllib3.Timeout(connect=timeout, read=timeout))
+        resp = pool.request("GET", target_url, headers=req_headers)
+        if resp.status == 200:
+            data = json.loads(resp.data.decode("utf-8"))
+            return True, data.get("ip", "connected")
+        return False, f"HTTP {resp.status}"
+    except (urllib3.exceptions.HTTPError, urllib3.exceptions.TimeoutError) as e:
+        return False, str(e)
+    except Exception:
+        try:
+            proxy_handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+            opener = urllib.request.build_opener(proxy_handler)
+            req = urllib.request.Request(target_url, headers=req_headers)
+            with opener.open(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return True, data.get("ip", "connected")
+        except Exception as e:
+            return False, str(e)
+
+def http_post_json(url, headers, payload_dict, timeout=10.0, proxy_url=None):
     """Executes an HTTP POST with JSON body and returns parsed JSON, using connection pooling when available."""
     data_bytes = json.dumps(payload_dict).encode("utf-8")
     req_headers = dict(headers)
     req_headers["Content-Type"] = "application/json"
     req_headers["User-Agent"] = "antigravity"
+
+    effective_proxy = proxy_url or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or os.environ.get("all_proxy") or os.environ.get("ALL_PROXY")
+
+    if effective_proxy:
+        pool = get_proxy_pool(effective_proxy)
+        if pool is not None:
+            try:
+                resp = pool.request(
+                    "POST",
+                    url,
+                    body=data_bytes,
+                    headers=req_headers,
+                    timeout=timeout
+                )
+                if resp.status >= 400:
+                    raise Exception(f"HTTP {resp.status}: {resp.data.decode('utf-8', errors='ignore')}")
+                return json.loads(resp.data.decode("utf-8"))
+            except Exception:
+                pass
+
+        proxy_handler = urllib.request.ProxyHandler({
+            "http": effective_proxy,
+            "https": effective_proxy
+        })
+        opener = urllib.request.build_opener(proxy_handler)
+        req = urllib.request.Request(url, data=data_bytes, headers=req_headers)
+        with opener.open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
 
     if _HTTP_POOL is not None:
         try:
@@ -128,7 +259,7 @@ def find_agy_binary():
             return cp
     return None
 
-def get_agy_oauth_client(refresh_token=None):
+def get_agy_oauth_client(refresh_token=None, proxy_url=None):
     """Retrieves Google Antigravity's public OAuth client credentials safely using cache & singleton lock."""
     global _OAUTH_CLIENT_CACHE, _CACHE_LOCK
     if _CACHE_LOCK is None:
@@ -182,8 +313,14 @@ def get_agy_oauth_client(refresh_token=None):
                                     "refresh_token": refresh_token
                                 }).encode()
                                 req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data)
-                                with urllib.request.urlopen(req, context=get_ssl_context(), timeout=5) as resp:
-                                    t = json.loads(resp.read().decode())
+                                if proxy_url:
+                                    proxy_handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+                                    opener = urllib.request.build_opener(proxy_handler)
+                                    with opener.open(req, timeout=5) as resp:
+                                        t = json.loads(resp.read().decode())
+                                else:
+                                    with urllib.request.urlopen(req, context=get_ssl_context(), timeout=5) as resp:
+                                        t = json.loads(resp.read().decode())
                                     if "access_token" in t:
                                         found_c, found_s = c, s
                                         break
@@ -532,7 +669,8 @@ def get_active_lockouts():
 def record_profile_lockout(profile_name):
     return False
 
-def fetch_single_profile(name, profile_path, metadata_cache=None, force_refresh=False, active_lockouts=None):
+def fetch_single_profile(name, profile_path, metadata_cache=None, force_refresh=False, active_lockouts=None, global_proxy=None):
+    profile_proxy = get_profile_proxy(profile_path) or global_proxy or os.environ.get("MULTIGRAVITY_PROXY") or os.environ.get("MGY_PROXY")
     result = {
         "profile": name,
         "authenticated": False,
@@ -541,7 +679,8 @@ def fetch_single_profile(name, profile_path, metadata_cache=None, force_refresh=
         "models": [],
         "critical_count": 0,
         "low_count": 0,
-        "error": None
+        "error": None,
+        "proxy": profile_proxy
     }
 
     raw = get_profile_raw_credential(name, profile_path)
@@ -578,7 +717,7 @@ def fetch_single_profile(name, profile_path, metadata_cache=None, force_refresh=
 
     # Refresh OAuth access token if expired or missing
     if not token_valid and refresh_token:
-        cid, sec = get_agy_oauth_client(refresh_token)
+        cid, sec = get_agy_oauth_client(refresh_token, proxy_url=profile_proxy)
         if cid and sec:
             try:
                 refresh_data = urllib.parse.urlencode({
@@ -588,8 +727,14 @@ def fetch_single_profile(name, profile_path, metadata_cache=None, force_refresh=
                     "refresh_token": refresh_token
                 }).encode()
                 req = urllib.request.Request("https://oauth2.googleapis.com/token", data=refresh_data)
-                with urllib.request.urlopen(req, context=get_ssl_context(), timeout=10) as resp:
-                    t_data = json.loads(resp.read().decode())
+                if profile_proxy:
+                    proxy_handler = urllib.request.ProxyHandler({"http": profile_proxy, "https": profile_proxy})
+                    opener = urllib.request.build_opener(proxy_handler)
+                    with opener.open(req, timeout=10) as resp:
+                        t_data = json.loads(resp.read().decode())
+                else:
+                    with urllib.request.urlopen(req, context=get_ssl_context(), timeout=10) as resp:
+                        t_data = json.loads(resp.read().decode())
                 new_token = t_data.get("access_token")
                 if new_token:
                     access_token = new_token
@@ -650,7 +795,8 @@ def fetch_single_profile(name, profile_path, metadata_cache=None, force_refresh=
                 "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
                 auth_headers,
                 {"project": target_proj},
-                timeout=10.0
+                timeout=10.0,
+                proxy_url=profile_proxy
             )
         except Exception:
             return None
@@ -661,7 +807,8 @@ def fetch_single_profile(name, profile_path, metadata_cache=None, force_refresh=
                 "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
                 auth_headers,
                 {"project": target_proj},
-                timeout=10.0
+                timeout=10.0,
+                proxy_url=profile_proxy
             )
         except Exception:
             return None
@@ -684,7 +831,8 @@ def fetch_single_profile(name, profile_path, metadata_cache=None, force_refresh=
                     "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
                     auth_headers,
                     {"metadata": {"ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}},
-                    timeout=10.0
+                    timeout=10.0,
+                    proxy_url=profile_proxy
                 )
             except Exception:
                 return None
@@ -884,7 +1032,11 @@ def render_profile_column(data, width=56, min_version_str="3.8", show_all=False)
         lines.append(f"  {BOLD}{CYAN}QUOTA DASHBOARD{RESET}")
     else:
         lines.append(f"  {BOLD}{CYAN}QUOTA DASHBOARD{RESET} {DIM}(Gemini {min_version_str}+){RESET}")
-    lines.append(f"  {DIM}{name} [{tier}]{RESET}")
+    if data.get("proxy"):
+        hp = get_proxy_host_port(data["proxy"])
+        lines.append(f"  {DIM}{name} [{tier}] {CYAN}[Proxy: {hp}]{RESET}")
+    else:
+        lines.append(f"  {DIM}{name} [{tier}]{RESET}")
     lines.append("")
 
     if not data["authenticated"] or data.get("error"):
@@ -1054,7 +1206,7 @@ def render_side_by_side(all_columns, term_width, col_width=56, forced_cols=None)
 
     return "\n".join(output_lines)
 
-def run_dashboard(selected_profile=None, forced_cols=None, as_json=False, force_refresh=False, show_all=False, min_gemini="3.8"):
+def run_dashboard(selected_profile=None, forced_cols=None, as_json=False, force_refresh=False, show_all=False, min_gemini="3.8", global_proxy=None):
     profiles_dir = get_profiles_dir()
     if not os.path.exists(profiles_dir):
         print(f"No profiles found in {profiles_dir}")
@@ -1088,7 +1240,7 @@ def run_dashboard(selected_profile=None, forced_cols=None, as_json=False, force_
     worker_count = max(1, min(len(targets), 24))
     with ThreadPoolExecutor(max_workers=worker_count) as ex:
         futs = {
-            ex.submit(fetch_single_profile, name, path, metadata_cache, force_refresh, active_lockouts): name
+            ex.submit(fetch_single_profile, name, path, metadata_cache, force_refresh, active_lockouts, global_proxy): name
             for name, path in targets
         }
         for fut in as_completed(futs):
@@ -1209,7 +1361,7 @@ def score_profile_for_model(profile_data, target_provider, target_model=None):
 
     return float(target_pct), float(overall_pct)
 
-def select_best_profile(exclude_profiles=None, model_hint=None, force_refresh=False):
+def select_best_profile(exclude_profiles=None, model_hint=None, force_refresh=False, global_proxy=None):
     """Selects the authenticated profile with the highest remaining quota for the active model/provider."""
     profiles_dir = get_profiles_dir()
     if not os.path.exists(profiles_dir):
@@ -1236,7 +1388,7 @@ def select_best_profile(exclude_profiles=None, model_hint=None, force_refresh=Fa
     worker_count = max(1, min(len(targets), 24))
     with ThreadPoolExecutor(max_workers=worker_count) as ex:
         futs = {
-            ex.submit(fetch_single_profile, name, path, metadata_cache, force_refresh, active_lockouts): name
+            ex.submit(fetch_single_profile, name, path, metadata_cache, force_refresh, active_lockouts, global_proxy): name
             for name, path in targets
         }
         for fut in as_completed(futs):
@@ -2217,8 +2369,24 @@ def main():
     parser.add_argument("--target-pid", type=int, default=0, help="Target process ID hosting agy REPL")
     parser.add_argument("--target-title", type=str, default="", help="Target window title hosting agy REPL")
     parser.add_argument("--target-hwnd", type=int, default=0, help="Target window handle (HWND) hosting agy REPL")
+    parser.add_argument("--proxy", type=str, default="", help="Proxy URL or address:port:username:password to route API calls through")
+    parser.add_argument("--test-proxy", type=str, metavar="SPEC", help="Test proxy connection and print exit IP")
     args = parser.parse_args()
 
+    if args.test_proxy:
+        formatted = format_proxy_url(args.test_proxy)
+        if not formatted:
+            print(f"FAILED: Invalid proxy specification: {args.test_proxy}")
+            sys.exit(1)
+        ok, ip_or_err = test_proxy_connection(formatted)
+        if ok:
+            print(f"OK: Exit IP: {ip_or_err}")
+            sys.exit(0)
+        else:
+            print(f"FAILED: {ip_or_err}")
+            sys.exit(1)
+
+    global_proxy = format_proxy_url(args.proxy) if args.proxy else None
     selected_profile = args.profile or args.profile_flag or ""
 
     if args.inject_repl_b64:
@@ -2280,7 +2448,7 @@ def main():
         if not os.path.isdir(p_path):
             sys.exit(2)
         meta_cache = load_metadata_cache()
-        data = fetch_single_profile(prof, p_path, meta_cache, force_refresh=args.refresh)
+        data = fetch_single_profile(prof, p_path, meta_cache, force_refresh=args.refresh, global_proxy=global_proxy)
         target_prov, target_mod = detect_target_provider_and_model(args.model)
         t_pct, _ = score_profile_for_model(data, target_prov, target_mod)
         conv_err = has_recent_quota_error(args.conv_id) if args.conv_id else False
@@ -2292,7 +2460,7 @@ def main():
             sys.exit(1)
 
     if args.best:
-        best = select_best_profile(exclude_profiles=args.exclude, model_hint=args.model, force_refresh=args.refresh)
+        best = select_best_profile(exclude_profiles=args.exclude, model_hint=args.model, force_refresh=args.refresh, global_proxy=global_proxy)
         if not best:
             sys.exit(1)
         if args.best_format == "json" or args.json:
@@ -2318,12 +2486,12 @@ def main():
                 # Clear terminal screen
                 sys.stdout.write("\033[H\033[2J")
                 sys.stdout.flush()
-                run_dashboard(prof_arg, forced_cols, as_json=args.json, force_refresh=args.refresh, show_all=show_all, min_gemini=args.min_gemini)
+                run_dashboard(prof_arg, forced_cols, as_json=args.json, force_refresh=args.refresh, show_all=show_all, min_gemini=args.min_gemini, global_proxy=global_proxy)
                 time.sleep(args.watch)
         except KeyboardInterrupt:
             print("\nExiting watch mode.")
     else:
-        run_dashboard(prof_arg, forced_cols, as_json=args.json, force_refresh=args.refresh, show_all=show_all, min_gemini=args.min_gemini)
+        run_dashboard(prof_arg, forced_cols, as_json=args.json, force_refresh=args.refresh, show_all=show_all, min_gemini=args.min_gemini, global_proxy=global_proxy)
 
 if __name__ == "__main__":
     main()
